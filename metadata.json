@@ -1,0 +1,5 @@
+{
+  "name": "Mock Placement Drive Evaluator",
+  "description": "An evaluation platform for interviewers to record candidate scores, generate automated feedback, and sync with Google Sheets based on mock placement drive rubrics.",
+  "capabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
