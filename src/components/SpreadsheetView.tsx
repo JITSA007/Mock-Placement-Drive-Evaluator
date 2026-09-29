@@ -7,6 +7,9 @@ import {
   Eye,
   Trash2,
   Layers,
+  Database,
+  ExternalLink,
+  RefreshCw,
 } from 'lucide-react';
 import { Candidate, EvaluationRecord } from '../types';
 import { exportEvaluationsToExcel, exportEvaluationsToCSV } from '../utils/excelUtils';
@@ -17,6 +20,9 @@ interface SpreadsheetViewProps {
   onDeleteRecord: (id: string) => void;
   onViewReview: (record: EvaluationRecord) => void;
   onEditAmcat?: (candidate: Candidate) => void;
+  spreadsheetId?: string | null;
+  onManualSync?: () => void;
+  isSyncingSheets?: boolean;
 }
 
 export const SpreadsheetView: React.FC<SpreadsheetViewProps> = ({
@@ -25,6 +31,9 @@ export const SpreadsheetView: React.FC<SpreadsheetViewProps> = ({
   onDeleteRecord,
   onViewReview,
   onEditAmcat,
+  spreadsheetId,
+  onManualSync,
+  isSyncingSheets,
 }) => {
   const [activeSheetTab, setActiveSheetTab] = useState<'evaluations' | 'leaderboard'>('evaluations');
   const [searchQuery, setSearchQuery] = useState('');
@@ -107,6 +116,54 @@ export const SpreadsheetView: React.FC<SpreadsheetViewProps> = ({
             <span>CSV</span>
           </button>
         </div>
+      </div>
+
+      {/* Google Sheets Database Status Banner */}
+      <div className="bg-emerald-50/90 border-b border-emerald-200 px-6 py-2.5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 text-xs text-emerald-950">
+        <div className="flex items-center space-x-2">
+          <Database size={16} className="text-emerald-700 shrink-0" />
+          <div>
+            <div className="font-bold flex items-center space-x-1.5">
+              <span>Google Sheets Database Integration:</span>
+              {spreadsheetId ? (
+                <span className="px-2 py-0.5 bg-emerald-200 text-emerald-900 rounded font-mono text-[11px]">
+                  Mock Placement Drive Database
+                </span>
+              ) : (
+                <span className="text-amber-800 font-normal">
+                  (Sign in with Google in header to auto-sync to your Google Drive)
+                </span>
+              )}
+            </div>
+            <p className="text-[11px] text-emerald-800">
+              Evaluations & candidate marks are written as live rows in your Google Spreadsheet.
+            </p>
+          </div>
+        </div>
+
+        {spreadsheetId && (
+          <div className="flex items-center space-x-2 self-end sm:self-auto">
+            {onManualSync && (
+              <button
+                onClick={onManualSync}
+                disabled={isSyncingSheets}
+                className="px-3 py-1 bg-white hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-lg text-xs font-semibold shadow-2xs flex items-center space-x-1 transition-colors disabled:opacity-50"
+              >
+                <RefreshCw size={12} className={isSyncingSheets ? 'animate-spin' : ''} />
+                <span>{isSyncingSheets ? 'Syncing...' : 'Sync Database'}</span>
+              </button>
+            )}
+            <a
+              href={`https://docs.google.com/spreadsheets/d/${spreadsheetId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-3 py-1 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-bold shadow-2xs flex items-center space-x-1 transition-colors"
+            >
+              <span>Open in Google Sheets</span>
+              <ExternalLink size={12} />
+            </a>
+          </div>
+        )}
       </div>
 
       {/* Sheet Tabs */}

@@ -20,7 +20,8 @@ export function exportEvaluationsToExcel(evaluations: EvaluationRecord[], filena
       'Score %': `${((record.totalScore / 50) * 100).toFixed(0)}%`,
       'Verdict': record.automatedReview.verdict,
       'Interviewer Name': record.interviewerName,
-      'Interviewer Phone': record.interviewerPhone,
+      'Interviewer Custom Feedback': record.customFeedback || '',
+      'AI Automated Feedback': record.aiFeedback || record.automatedReview.feedbackText,
       'Interviewer Remarks': record.interviewerRemarks,
       'Automated Review Summary': record.automatedReview.summary,
       // Criterion-wise scores
@@ -54,7 +55,8 @@ export function exportEvaluationsToCSV(evaluations: EvaluationRecord[], filename
     'Total Score': record.totalScore,
     'Verdict': record.automatedReview.verdict,
     'Interviewer Name': record.interviewerName,
-    'Interviewer Phone': record.interviewerPhone,
+    'Custom Feedback': (record.customFeedback || '').replace(/,/g, ';'),
+    'AI Feedback': (record.aiFeedback || record.automatedReview.feedbackText).replace(/,/g, ';'),
     'Remarks': record.interviewerRemarks.replace(/,/g, ';'),
     'Automated Review': record.automatedReview.feedbackText.replace(/,/g, ';'),
   }));

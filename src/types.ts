@@ -6,9 +6,9 @@ export type Degree = 'B.Tech' | 'MCA' | 'BCA' | 'Other';
 
 export interface InterviewerProfile {
   name: string;
-  phone: string;
-  panel: string;
-  companyOrCollege: string;
+  phone?: string;
+  panel?: string;
+  companyOrCollege?: string;
 }
 
 export interface AmcatCategory {
@@ -53,9 +53,11 @@ export interface EvaluationRecord {
   totalScore: number; // out of 50
   maxScore: number; // 50
   automatedReview: AutomatedReview;
-  interviewerRemarks: string;
+  customFeedback?: string; // Interviewer custom feedback
+  aiFeedback?: string; // AI generated feedback
+  interviewerRemarks: string; // Final remarks recorded in sheet
   interviewerName: string;
-  interviewerPhone: string;
+  interviewerPhone?: string;
   timestamp: string;
 }
 

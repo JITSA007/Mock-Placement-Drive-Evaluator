@@ -8,6 +8,7 @@ import {
   Printer,
   X,
   TrendingUp,
+  UserCheck,
 } from 'lucide-react';
 import { EvaluationRecord } from '../types';
 
@@ -169,25 +170,40 @@ export const AutomatedReviewModal: React.FC<AutomatedReviewModalProps> = ({
             <p className="text-purple-950 text-[11px] leading-relaxed">{automatedReview.roleFitNote}</p>
           </div>
 
-          {/* Comprehensive Feedback Paragraph */}
-          <div className="p-4 bg-gray-50 border border-gray-200 rounded-xl space-y-2">
-            <div className="flex justify-between items-center">
-              <h5 className="font-bold text-gray-800">Synthesized Student Feedback:</h5>
-              {onApplyToRemarks && (
-                <button
-                  onClick={() => {
-                    onApplyToRemarks(automatedReview.feedbackText);
-                    onClose();
-                  }}
-                  className="text-xs text-blue-600 hover:text-blue-800 font-medium"
-                >
-                  Insert into Form Remarks
-                </button>
-              )}
+          {/* Dual Feedback Section: Custom & AI */}
+          <div className="space-y-3">
+            {record.customFeedback && (
+              <div className="p-3.5 bg-blue-50/80 border border-blue-200 rounded-xl space-y-1">
+                <h5 className="font-bold text-blue-950 flex items-center space-x-1.5">
+                  <UserCheck size={14} className="text-blue-700" />
+                  <span>Interviewer Custom Feedback:</span>
+                </h5>
+                <p className="text-blue-900 text-xs leading-relaxed">{record.customFeedback}</p>
+              </div>
+            )}
+
+            <div className="p-4 bg-gray-50 border border-gray-200 rounded-xl space-y-2">
+              <div className="flex justify-between items-center">
+                <h5 className="font-bold text-gray-800 flex items-center space-x-1.5">
+                  <Sparkles size={14} className="text-amber-500" />
+                  <span>AI Automated Feedback:</span>
+                </h5>
+                {onApplyToRemarks && (
+                  <button
+                    onClick={() => {
+                      onApplyToRemarks(record.aiFeedback || automatedReview.feedbackText);
+                      onClose();
+                    }}
+                    className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+                  >
+                    Insert into Form Remarks
+                  </button>
+                )}
+              </div>
+              <p className="text-gray-700 text-xs leading-relaxed italic bg-white p-3 rounded-lg border border-gray-100">
+                "{record.aiFeedback || automatedReview.feedbackText}"
+              </p>
             </div>
-            <p className="text-gray-700 text-xs leading-relaxed italic bg-white p-3 rounded-lg border border-gray-100">
-              "{automatedReview.feedbackText}"
-            </p>
           </div>
         </div>
 

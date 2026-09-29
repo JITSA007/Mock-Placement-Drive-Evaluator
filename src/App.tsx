@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { User } from 'firebase/auth';
 import {
   Briefcase,
   Users,
@@ -10,7 +11,6 @@ import {
   PlusCircle,
   FileUp,
   Download,
-  Phone,
   MessageSquare,
   CheckCircle,
   AlertCircle,
@@ -19,6 +19,9 @@ import {
   SlidersHorizontal,
   Trophy,
   CheckSquare,
+  Tag,
+  PenTool,
+  RotateCcw,
 } from 'lucide-react';
 import {
   AmcatCategory,
@@ -26,46 +29,87 @@ import {
   Degree,
   EvaluationRecord,
   EvaluationType,
-  InterviewerProfile,
   TargetRole,
 } from './types';
 import {
   GD_CRITERIA,
   PI_CRITERIA,
-  INITIAL_CANDIDATES,
-  INITIAL_EVALUATIONS,
   ROLES_CONFIG,
   DEFAULT_AMCAT_CATEGORIES,
 } from './data/sampleData';
 import { generateAutomatedReview } from './utils/reviewGenerator';
-import { InterviewerModal } from './components/InterviewerModal';
 import { CandidateManagerModal } from './components/CandidateManagerModal';
 import { GDRecommenderModal } from './components/GDRecommenderModal';
 import { PIQuestionsModal } from './components/PIQuestionsModal';
 import { SpreadsheetView } from './components/SpreadsheetView';
 import { AutomatedReviewModal } from './components/AutomatedReviewModal';
 import { AmcatCategoryModal } from './components/AmcatCategoryModal';
+import { InterviewerLoginBar } from './components/InterviewerLoginBar';
+import { LoginGate } from './components/LoginGate';
 import { downloadSampleCandidateExcel } from './utils/excelUtils';
+import { syncService } from './utils/syncService';
+import { initAuth, googleSignIn, logout, getAccessToken } from './utils/googleAuth';
+import {
+  getOrCreateDatabaseSpreadsheet,
+  appendEvaluationToGoogleSheet,
+  syncAllToGoogleSheet,
+} from './utils/googleSheetsDatabase';
+
+const DEFAULT_INTERVIEWERS = [
+  'Dr. Rajesh Sharma (Nexora Tech Lead)',
+  'Priya Patel (InsightEdge Analytics)',
+  'Amit Verma (CloudVantage Tech Sales)',
+  'Dr. Sunita Rao (HR & Corporate Panel)',
+  'Sneha Kulkarni (Full Stack Engineering Lead)',
+  'Vikram Mehta (Placement Coordinator)',
+];
+
+const QUICK_FEEDBACK_TAGS = [
+  'Strong domain knowledge',
+  'Clear & structured communication',
+  'Demonstrated leadership & initiative',
+  'Good active listening & teamwork',
+  'Needs practice with complex SQL/algorithms',
+  'Confident posture & positive body language',
+  'Hesitant on edge-cases',
+  'High relocation readiness & enthusiasm',
+];
 
 export default function App() {
-  // Global Navigation Tabs
+  // Navigation Tabs
   const [activeTab, setActiveTab] = useState<'evaluate' | 'sheet' | 'candidates' | 'resources'>('evaluate');
 
-  // Interviewer Profile State (Mandatory Prompt 1st)
-  const [interviewer, setInterviewer] = useState<InterviewerProfile | null>(() => {
-    const saved = localStorage.getItem('placement_interviewer_profile');
+  // Google User Login & Sheets Database State
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isGuestMode, setIsGuestMode] = useState<boolean>(() => {
+    return localStorage.getItem('placement_guest_mode') === 'true';
+  });
+  const [spreadsheetId, setSpreadsheetId] = useState<string | null>(() => {
+    return localStorage.getItem('placement_google_sheet_database_id');
+  });
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [isSyncingSheets, setIsSyncingSheets] = useState(false);
+
+  // Interviewer Dropdown State (Direct dropdown - No modal form!)
+  const [interviewersList, setInterviewersList] = useState<string[]>(() => {
+    const saved = localStorage.getItem('placement_interviewers_list');
     if (saved) {
       try {
         return JSON.parse(saved);
       } catch (e) {
-        return null;
+        return DEFAULT_INTERVIEWERS;
       }
     }
-    return null;
+    return DEFAULT_INTERVIEWERS;
   });
-  const [isInterviewerModalOpen, setIsInterviewerModalOpen] = useState(false);
 
-  // AMCAT Categories (Customizable & Defined by user)
+  const [selectedInterviewer, setSelectedInterviewer] = useState<string>(() => {
+    return localStorage.getItem('placement_selected_interviewer') || DEFAULT_INTERVIEWERS[0];
+  });
+  const [isAddingNewInterviewer, setIsAddingNewInterviewer] = useState(false);
+  const [newInterviewerInput, setNewInterviewerInput] = useState('');
+
+  // AMCAT Categories (Customizable & defined by user)
   const [amcatCategories, setAmcatCategories] = useState<AmcatCategory[]>(() => {
     const saved = localStorage.getItem('placement_amcat_categories');
     if (saved) {
@@ -80,30 +124,37 @@ export default function App() {
   const [isAmcatModalOpen, setIsAmcatModalOpen] = useState(false);
   const [amcatTargetCandidate, setAmcatTargetCandidate] = useState<Candidate | null>(null);
 
-  // Candidates & Evaluations
+  // Candidates & Evaluations Store (Real-time synchronized across users)
   const [candidates, setCandidates] = useState<Candidate[]>(() => {
     const saved = localStorage.getItem('placement_candidates');
     if (saved) {
       try {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        const cleaned = parsed.filter((c: Candidate) => !c.id.startsWith('cand-00'));
+        return cleaned;
       } catch (e) {
-        return INITIAL_CANDIDATES;
+        return [];
       }
     }
-    return INITIAL_CANDIDATES;
+    return [];
   });
 
   const [evaluations, setEvaluations] = useState<EvaluationRecord[]>(() => {
     const saved = localStorage.getItem('placement_evaluations');
     if (saved) {
       try {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        const cleaned = parsed.filter((e: EvaluationRecord) => !e.id.startsWith('eval-00'));
+        return cleaned;
       } catch (e) {
-        return INITIAL_EVALUATIONS;
+        return [];
       }
     }
-    return INITIAL_EVALUATIONS;
+    return [];
   });
+
+  // Multi-user Presence & Synchronization
+  const [connectedUsers, setConnectedUsers] = useState<number>(1);
 
   // FLOW STATE: GD First, then PI
   const [evaluationType, setEvaluationType] = useState<EvaluationType>('GD');
@@ -116,7 +167,10 @@ export default function App() {
   const [degree, setDegree] = useState<Degree>('B.Tech');
   const [targetRole, setTargetRole] = useState<TargetRole>('Full Stack Developer');
   const [scores, setScores] = useState<Record<string, number>>({});
-  const [interviewerRemarks, setInterviewerRemarks] = useState<string>('');
+
+  // DUAL FEEDBACK: Customized manual feedback & AI feedback
+  const [customFeedback, setCustomFeedback] = useState<string>('');
+  const [aiFeedbackText, setAiFeedbackText] = useState<string>('');
   const [activeGDTopicTitle, setActiveGDTopicTitle] = useState<string>('');
 
   // Modals state
@@ -125,25 +179,73 @@ export default function App() {
   const [isPIModalOpen, setIsPIModalOpen] = useState(false);
   const [reviewModalRecord, setReviewModalRecord] = useState<EvaluationRecord | null>(null);
 
-  // Form feedback / toast
+  // Notifications & Live Sync Indicator
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
-
-  // Post GD completion quick-jump banner state
+  const [liveSyncActive, setLiveSyncActive] = useState<boolean>(true);
   const [justCompletedGDCandidate, setJustCompletedGDCandidate] = useState<Candidate | null>(null);
 
-  // Check if interviewer must be prompted on first mount
+  // --- Initialize Firebase Google Authentication Listener ---
   useEffect(() => {
-    if (!interviewer) {
-      setIsInterviewerModalOpen(true);
-    }
-  }, [interviewer]);
+    const unsubscribeAuth = initAuth(
+      async (user, token) => {
+        setCurrentUser(user);
+        // Add user to interviewer list if not already
+        if (user.displayName) {
+          const formatted = `${user.displayName} (${user.email || 'Google User'})`;
+          setInterviewersList((prev) => (prev.includes(formatted) ? prev : [formatted, ...prev]));
+          setSelectedInterviewer(formatted);
+        }
 
-  // Persist state to local storage
+        // Initialize or find Google Sheet database
+        try {
+          const sheetId = await getOrCreateDatabaseSpreadsheet(token);
+          setSpreadsheetId(sheetId);
+        } catch (err) {
+          console.warn('Could not auto-connect Google Sheet database:', err);
+        }
+      },
+      () => {
+        setCurrentUser(null);
+      }
+    );
+
+    return () => unsubscribeAuth();
+  }, []);
+
+  // --- Real-Time Multi-User Synchronization Setup ---
   useEffect(() => {
-    if (interviewer) {
-      localStorage.setItem('placement_interviewer_profile', JSON.stringify(interviewer));
-    }
-  }, [interviewer]);
+    fetch('/api/state')
+      .then((res) => res.json())
+      .then((data) => {
+        if (Array.isArray(data.candidates)) setCandidates(data.candidates);
+        if (Array.isArray(data.evaluations)) setEvaluations(data.evaluations);
+        if (Array.isArray(data.amcatCategories)) setAmcatCategories(data.amcatCategories);
+        if (Array.isArray(data.interviewers)) setInterviewersList(data.interviewers);
+        if (typeof data.connectedUsers === 'number') setConnectedUsers(data.connectedUsers);
+        setLiveSyncActive(true);
+      })
+      .catch((err) => console.log('Using local sync mode:', err));
+
+    const unsubscribe = syncService.subscribe((delta) => {
+      setLiveSyncActive(true);
+      if (delta.candidates !== undefined) setCandidates(delta.candidates);
+      if (delta.evaluations !== undefined) setEvaluations(delta.evaluations);
+      if (delta.amcatCategories !== undefined) setAmcatCategories(delta.amcatCategories);
+      if (delta.interviewers !== undefined) setInterviewersList(delta.interviewers);
+      if (typeof delta.connectedUsers === 'number') setConnectedUsers(delta.connectedUsers);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // Persist selections locally
+  useEffect(() => {
+    localStorage.setItem('placement_selected_interviewer', selectedInterviewer);
+  }, [selectedInterviewer]);
+
+  useEffect(() => {
+    localStorage.setItem('placement_interviewers_list', JSON.stringify(interviewersList));
+  }, [interviewersList]);
 
   useEffect(() => {
     localStorage.setItem('placement_amcat_categories', JSON.stringify(amcatCategories));
@@ -162,19 +264,71 @@ export default function App() {
     setTimeout(() => setNotification(null), 3500);
   };
 
+  // Google Login Handler
+  const handleGoogleLogin = async () => {
+    setIsLoggingIn(true);
+    try {
+      const result = await googleSignIn();
+      if (result) {
+        setCurrentUser(result.user);
+        if (result.user.displayName) {
+          const formatted = `${result.user.displayName} (${result.user.email || 'Google User'})`;
+          setInterviewersList((prev) => (prev.includes(formatted) ? prev : [formatted, ...prev]));
+          setSelectedInterviewer(formatted);
+          syncService.addInterviewer(formatted);
+        }
+
+        // Initialize or find user's Google Sheet database
+        const sheetId = await getOrCreateDatabaseSpreadsheet(result.accessToken);
+        setSpreadsheetId(sheetId);
+        showToast('Signed in! Google Sheets database connected.');
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Login failed', 'error');
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleGoogleLogout = async () => {
+    await logout();
+    setCurrentUser(null);
+    setIsGuestMode(false);
+    localStorage.removeItem('placement_guest_mode');
+    showToast('Signed out of Google account.');
+  };
+
+  // Manual Push to Google Sheet Database
+  const handleManualSyncToGoogleSheets = async () => {
+    const token = await getAccessToken();
+    if (!token || !spreadsheetId) {
+      showToast('Please sign in to Google to sync database.', 'error');
+      return;
+    }
+
+    setIsSyncingSheets(true);
+    try {
+      await syncAllToGoogleSheet(token, spreadsheetId, evaluations, candidates);
+      showToast('All records successfully synchronized to Google Sheet database!');
+    } catch (err: any) {
+      showToast(err.message || 'Failed to sync to Google Sheet', 'error');
+    } finally {
+      setIsSyncingSheets(false);
+    }
+  };
+
   // Find active candidate object
   const activeCandidate = candidates.find(
     (c) => c.id === selectedCandidateId || (c.rollNo && c.rollNo.toLowerCase() === rollNo.toLowerCase())
   );
 
-  // Check if active candidate has existing GD evaluation
   const activeCandidateGDEval = activeCandidate
     ? evaluations.find(
         (e) => (e.candidateId === activeCandidate.id || e.rollNo === activeCandidate.rollNo) && e.evaluationType === 'GD'
       )
     : null;
 
-  // Synchronize candidate selection
+  // Candidate selection
   const handleCandidateSelect = (candId: string) => {
     setSelectedCandidateId(candId);
     if (!candId) {
@@ -188,7 +342,6 @@ export default function App() {
       setRollNo(cand.rollNo);
       setDegree(cand.degree);
       setTargetRole(cand.targetRole);
-      // Auto-set shortlist status
       setShortlistForPI(true);
     }
   };
@@ -200,7 +353,6 @@ export default function App() {
         ...prev,
         [criterion]: clamped,
       };
-      // Auto-check shortlist if GD score >= 25
       if (evaluationType === 'GD') {
         const sum = currentCriteria.reduce((s, c) => s + (updated[c] || 0), 0);
         setShortlistForPI(sum >= 25);
@@ -212,7 +364,7 @@ export default function App() {
   const currentCriteria = evaluationType === 'GD' ? GD_CRITERIA : PI_CRITERIA;
   const totalScore = currentCriteria.reduce((sum, crit) => sum + (scores[crit] || 0), 0);
 
-  // Automated Review preview
+  // Live Automated AI Review Generation
   const liveAutomatedReview = generateAutomatedReview({
     studentName: studentName.trim() || 'Candidate',
     evaluationType,
@@ -221,39 +373,67 @@ export default function App() {
     totalScore,
   });
 
-  const handleGenerateReviewToRemarks = () => {
+  const handleGenerateAIFeedback = () => {
     if (!studentName.trim()) {
       showToast('Please specify a candidate name first.', 'error');
       return;
     }
-    setInterviewerRemarks(liveAutomatedReview.feedbackText);
-    showToast('⚡ Automated review synthesized and placed in remarks box!');
+    setAiFeedbackText(liveAutomatedReview.feedbackText);
+    showToast('⚡ AI Feedback generated successfully!');
   };
 
-  // Switch to PI Round for a specific candidate
+  const handleAppendAIToCustom = () => {
+    if (!aiFeedbackText) {
+      setAiFeedbackText(liveAutomatedReview.feedbackText);
+    }
+    const textToAppend = aiFeedbackText || liveAutomatedReview.feedbackText;
+    setCustomFeedback((prev) => (prev ? `${prev}\n\n[AI Feedback]: ${textToAppend}` : textToAppend));
+    showToast('AI Feedback appended to custom notes.');
+  };
+
+  const handleAddQuickTag = (tag: string) => {
+    setCustomFeedback((prev) => (prev ? `${prev}; ${tag}` : tag));
+  };
+
+  // Add new interviewer inline
+  const handleAddNewInterviewer = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newInterviewerInput.trim()) return;
+
+    const trimmed = newInterviewerInput.trim();
+    if (!interviewersList.includes(trimmed)) {
+      const updated = [trimmed, ...interviewersList];
+      setInterviewersList(updated);
+      setSelectedInterviewer(trimmed);
+      syncService.addInterviewer(trimmed);
+      showToast(`Added interviewer "${trimmed}"!`);
+    } else {
+      setSelectedInterviewer(trimmed);
+    }
+    setNewInterviewerInput('');
+    setIsAddingNewInterviewer(false);
+  };
+
+  // Switch to PI Round for candidate
   const handleStartPIRoundForCandidate = (cand: Candidate) => {
     setEvaluationType('PI');
     handleCandidateSelect(cand.id);
     setScores({});
-    setInterviewerRemarks('');
+    setCustomFeedback('');
+    setAiFeedbackText('');
     setJustCompletedGDCandidate(null);
     showToast(`Commencing PI Round for ${cand.name}!`);
   };
 
-  const handleFormSubmit = (e: React.FormEvent) => {
+  // Submit Evaluation Form
+  const handleFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-
-    if (!interviewer) {
-      setIsInterviewerModalOpen(true);
-      return;
-    }
 
     if (!studentName.trim() || !rollNo.trim()) {
       showToast('Please select or enter candidate name and roll number.', 'error');
       return;
     }
 
-    // Auto-register candidate if not in pool
     let matchedCand = candidates.find((c) => c.rollNo.toLowerCase() === rollNo.toLowerCase());
     const nextStatus: Candidate['status'] =
       evaluationType === 'GD'
@@ -274,18 +454,7 @@ export default function App() {
         status: nextStatus,
       };
       setCandidates((prev) => [matchedCand!, ...prev]);
-    } else {
-      // Update candidate status
-      setCandidates((prev) =>
-        prev.map((c) =>
-          c.id === matchedCand!.id
-            ? {
-                ...c,
-                status: nextStatus,
-              }
-            : c
-        )
-      );
+      await syncService.saveCandidate(matchedCand);
     }
 
     const review = generateAutomatedReview({
@@ -295,6 +464,12 @@ export default function App() {
       scores,
       totalScore,
     });
+
+    const finalAIText = aiFeedbackText.trim() || review.feedbackText;
+    const finalCustomText = customFeedback.trim();
+    const combinedRemarks = finalCustomText
+      ? `${finalCustomText}${finalAIText ? ` | [AI]: ${finalAIText}` : ''}`
+      : finalAIText || review.summary;
 
     const newRecord: EvaluationRecord = {
       id: `eval-${Date.now()}`,
@@ -309,9 +484,10 @@ export default function App() {
       totalScore,
       maxScore: 50,
       automatedReview: review,
-      interviewerRemarks: interviewerRemarks.trim() || review.summary,
-      interviewerName: interviewer.name,
-      interviewerPhone: interviewer.phone,
+      customFeedback: finalCustomText,
+      aiFeedback: finalAIText,
+      interviewerRemarks: combinedRemarks,
+      interviewerName: selectedInterviewer,
       timestamp: new Date().toLocaleString([], {
         month: 'short',
         day: 'numeric',
@@ -321,21 +497,34 @@ export default function App() {
       }),
     };
 
+    // 1. Optimistic local update + Broadcast across users
     setEvaluations((prev) => [newRecord, ...prev]);
+    await syncService.saveEvaluation(newRecord);
+
+    // 2. Append to real Google Sheets Database if user is logged in
+    const token = await getAccessToken();
+    if (token && spreadsheetId) {
+      try {
+        await appendEvaluationToGoogleSheet(token, spreadsheetId, newRecord);
+      } catch (sheetErr) {
+        console.warn('Failed to append to Google Sheet in background:', sheetErr);
+      }
+    }
 
     if (evaluationType === 'GD') {
-      showToast(`GD Evaluation (${totalScore}/50) recorded for ${studentName}!`);
+      showToast(`GD Evaluation (${totalScore}/50) recorded to Google Sheet & server!`);
       if (shortlistForPI) {
         setJustCompletedGDCandidate(matchedCand);
       }
     } else {
-      showToast(`Personal Interview (${totalScore}/50) recorded for ${studentName}!`);
+      showToast(`Personal Interview (${totalScore}/50) recorded to Google Sheet & server!`);
       setJustCompletedGDCandidate(null);
     }
 
-    // Reset scores & remarks for next student
+    // Reset fields for next student
     setScores({});
-    setInterviewerRemarks('');
+    setCustomFeedback('');
+    setAiFeedbackText('');
     setSelectedCandidateId('');
     setStudentName('');
     setRollNo('');
@@ -354,15 +543,28 @@ export default function App() {
           : c
       )
     );
+    syncService.updateCandidateAmcat(candidateId, catScores, total);
   };
 
   const roleMeta = ROLES_CONFIG[targetRole] || ROLES_CONFIG['Full Stack Developer'];
 
-  // Candidates filtered for current round flow:
-  // In PI round: highlight candidates with status 'PI Shortlisted'
   const shortlistedForPICandidates = candidates.filter(
     (c) => c.status === 'PI Shortlisted' || evaluations.some((e) => e.candidateId === c.id && e.evaluationType === 'GD')
   );
+
+  // Protected Login Gate: Show sign-in screen if interviewer is not authenticated
+  if (!currentUser && !isGuestMode) {
+    return (
+      <LoginGate
+        onLogin={handleGoogleLogin}
+        onContinueAsGuest={() => {
+          setIsGuestMode(true);
+          localStorage.setItem('placement_guest_mode', 'true');
+        }}
+        isLoggingIn={isLoggingIn}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-100 flex flex-col font-sans text-slate-800">
@@ -378,10 +580,10 @@ export default function App() {
         </div>
       )}
 
-      {/* Top App Header */}
+      {/* Top Application Header */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-40 shadow-xs">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-          {/* Logo & Drive Title */}
+          {/* Logo & Real-time Live Badge */}
           <div className="flex items-center space-x-3">
             <div className="p-2.5 bg-gradient-to-tr from-blue-700 to-indigo-600 text-white rounded-xl shadow-sm">
               <Briefcase size={22} />
@@ -391,50 +593,88 @@ export default function App() {
                 <h1 className="text-base sm:text-lg font-bold text-slate-900 leading-tight">
                   Mock Placement Drive Evaluator
                 </h1>
-                <span className="hidden md:inline-block px-2 py-0.5 bg-purple-50 text-purple-700 text-[10px] rounded-md font-semibold border border-purple-200">
-                  GD (50M) ➔ PI (50M) Flow
+                {/* Dynamic Real-time sync badge */}
+                <span className="inline-flex items-center space-x-1.5 px-2.5 py-0.5 bg-emerald-50 text-emerald-800 border border-emerald-200 text-[10px] rounded-full font-bold">
+                  <span className={`w-1.5 h-1.5 rounded-full ${liveSyncActive ? 'bg-emerald-500 animate-ping' : 'bg-slate-400'}`}></span>
+                  <span>{liveSyncActive ? `Live Sync Active • ${connectedUsers} Evaluator${connectedUsers > 1 ? 's' : ''} Online` : 'Connecting...'}</span>
                 </span>
               </div>
               <p className="text-[11px] text-slate-500">
-                Placement Pipeline • Category-wise AMCAT Scoring • Google Sheet Sync
+                Google Sheets Database • Multi-User Server • GD ➔ PI Pipeline
               </p>
             </div>
           </div>
 
-          {/* Interviewer Profile Badge & Quick Change */}
-          <div className="flex items-center space-x-3 w-full sm:w-auto justify-between sm:justify-end">
-            {interviewer ? (
-              <div className="flex items-center space-x-2.5 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-xl text-xs">
-                <div className="w-7 h-7 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-xs">
-                  {interviewer.name.charAt(0)}
-                </div>
-                <div className="text-left">
-                  <div className="font-semibold text-slate-900 leading-none">{interviewer.name}</div>
-                  <div className="text-[10px] text-slate-500 mt-0.5 flex items-center space-x-1">
-                    <Phone size={10} />
-                    <span>{interviewer.phone}</span>
-                    <span className="text-slate-300">•</span>
-                    <span>{interviewer.panel}</span>
-                  </div>
-                </div>
-                <button
-                  onClick={() => setIsInterviewerModalOpen(true)}
-                  className="ml-2 text-[11px] text-blue-600 hover:text-blue-800 font-medium underline"
-                >
-                  Edit
-                </button>
+          {/* INTERVIEWER DROPDOWN (No Form!) */}
+          <div className="flex items-center space-x-2 w-full sm:w-auto justify-between sm:justify-end">
+            <div className="flex items-center space-x-2 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-xl text-xs w-full sm:w-auto">
+              <div className="w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-[11px] shrink-0">
+                <UserCheck size={13} />
               </div>
-            ) : (
-              <button
-                onClick={() => setIsInterviewerModalOpen(true)}
-                className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold shadow-xs flex items-center space-x-1.5 animate-pulse"
-              >
-                <UserCheck size={14} />
-                <span>Set Interviewer Profile</span>
-              </button>
-            )}
+
+              {!isAddingNewInterviewer ? (
+                <div className="flex items-center space-x-1.5 flex-1 sm:flex-none">
+                  <span className="text-[11px] text-slate-500 font-medium whitespace-nowrap">Evaluator:</span>
+                  <select
+                    value={selectedInterviewer}
+                    onChange={(e) => {
+                      if (e.target.value === '__add_new__') {
+                        setIsAddingNewInterviewer(true);
+                      } else {
+                        setSelectedInterviewer(e.target.value);
+                      }
+                    }}
+                    className="bg-transparent font-bold text-slate-900 text-xs focus:outline-none cursor-pointer max-w-[200px] truncate"
+                  >
+                    {interviewersList.map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                    <option value="__add_new__" className="text-blue-600 font-semibold">
+                      + Add New Interviewer Name...
+                    </option>
+                  </select>
+                </div>
+              ) : (
+                <form onSubmit={handleAddNewInterviewer} className="flex items-center space-x-1.5">
+                  <input
+                    type="text"
+                    value={newInterviewerInput}
+                    onChange={(e) => setNewInterviewerInput(e.target.value)}
+                    placeholder="Enter Interviewer Name..."
+                    autoFocus
+                    className="px-2 py-1 bg-white border border-blue-400 rounded-lg text-xs font-semibold focus:outline-none w-44"
+                  />
+                  <button
+                    type="submit"
+                    className="px-2 py-1 bg-blue-600 text-white rounded-lg text-xs font-bold shadow-xs hover:bg-blue-700"
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsAddingNewInterviewer(false)}
+                    className="px-1.5 py-1 text-slate-400 hover:text-slate-600 text-xs"
+                  >
+                    ✕
+                  </button>
+                </form>
+              )}
+            </div>
           </div>
         </div>
+
+        {/* INTERVIEWER LOGIN & GOOGLE SHEETS DATABASE BAR */}
+        <InterviewerLoginBar
+          currentUser={currentUser}
+          spreadsheetId={spreadsheetId}
+          isLoggingIn={isLoggingIn}
+          isSyncingSheets={isSyncingSheets}
+          onLogin={handleGoogleLogin}
+          onLogout={handleGoogleLogout}
+          onManualSync={handleManualSyncToGoogleSheets}
+        />
 
         {/* Global Navigation Tabs */}
         <div className="border-t border-slate-200/80 bg-slate-50/70">
@@ -495,10 +735,9 @@ export default function App() {
         {/* VIEW 1: EVALUATION FLOW STUDIO */}
         {activeTab === 'evaluate' && (
           <div className="space-y-6">
-            {/* 1. FLOW STEPPER BAR (GD 1st, then PI) */}
+            {/* Step 1 ➔ Step 2 Flow Stepper */}
             <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200 shadow-xs flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
               <div className="flex items-center space-x-2 sm:space-x-3 overflow-x-auto pb-1 md:pb-0">
-                {/* Step 1: GD Button */}
                 <button
                   onClick={() => {
                     setEvaluationType('GD');
@@ -523,7 +762,6 @@ export default function App() {
 
                 <ArrowRight size={18} className="text-slate-400 shrink-0 hidden sm:inline" />
 
-                {/* Step 2: PI Button */}
                 <button
                   onClick={() => {
                     setEvaluationType('PI');
@@ -547,7 +785,7 @@ export default function App() {
                 </button>
               </div>
 
-              {/* AMCAT Category-Wise Quick Action */}
+              {/* AMCAT Quick Action */}
               <div className="flex items-center space-x-2 self-end md:self-center">
                 <button
                   onClick={() => {
@@ -562,7 +800,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* Quick Transition Alert when a student just cleared GD */}
+            {/* Candidate Shortlist Alert */}
             {justCompletedGDCandidate && (
               <div className="p-4 bg-purple-50 border border-purple-200 rounded-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 animate-in fade-in duration-300">
                 <div className="flex items-center space-x-3 text-xs text-purple-900">
@@ -570,7 +808,7 @@ export default function App() {
                     <CheckCircle size={18} />
                   </div>
                   <div>
-                    <span className="font-bold">{justCompletedGDCandidate.name}</span> has been shortlisted from the Group Discussion round!
+                    <span className="font-bold">{justCompletedGDCandidate.name}</span> qualified the GD round!
                     <div className="text-[11px] text-purple-700 mt-0.5">
                       Ready for Step 2: Personal Interview (PI - 50 Marks).
                     </div>
@@ -594,11 +832,10 @@ export default function App() {
               </div>
             )}
 
-            {/* Main Form Grid */}
+            {/* Evaluation Form & Real-Time Preview */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-              {/* Left 8 Columns: Form */}
+              {/* Left 8 Cols: Form with Scoring & Dual Feedback */}
               <div className="lg:col-span-8 bg-white rounded-2xl shadow-sm border border-slate-200 p-6 md:p-7 space-y-6">
-                {/* Header of Round Form */}
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center pb-4 border-b border-slate-100 gap-3">
                   <div>
                     <h2 className="text-base font-bold text-slate-900 flex items-center space-x-2">
@@ -620,7 +857,6 @@ export default function App() {
                     </p>
                   </div>
 
-                  {/* Recommendations Button */}
                   <div className="flex items-center space-x-2">
                     {evaluationType === 'GD' ? (
                       <button
@@ -661,7 +897,6 @@ export default function App() {
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
-                    {/* Candidate Dropdown */}
                     <div className="sm:col-span-2">
                       <label className="block text-[11px] font-semibold text-slate-600 mb-1">
                         {evaluationType === 'PI' ? 'Pick from Shortlisted Candidates' : 'Pick from Pool'}
@@ -671,7 +906,11 @@ export default function App() {
                         onChange={(e) => handleCandidateSelect(e.target.value)}
                         className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs focus:ring-1 focus:ring-blue-500 font-medium"
                       >
-                        <option value="">-- Choose Candidate or type manually --</option>
+                        <option value="">
+                          {(evaluationType === 'PI' ? shortlistedForPICandidates : candidates).length === 0
+                            ? '-- No candidates in database yet (Enter details below or upload Excel) --'
+                            : '-- Choose Candidate or type manually --'}
+                        </option>
                         {(evaluationType === 'PI' ? shortlistedForPICandidates : candidates).map((c) => {
                           const gd = evaluations.find((e) => e.candidateId === c.id && e.evaluationType === 'GD');
                           return (
@@ -747,7 +986,7 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Category-wise AMCAT breakdown badge & edit button */}
+                  {/* Category-wise AMCAT breakdown badge */}
                   {activeCandidate && (
                     <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-xl flex flex-wrap items-center justify-between gap-2 text-xs">
                       <div>
@@ -779,7 +1018,7 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* If in PI round: display previous GD evaluation status */}
+                  {/* PI round: display previous GD evaluation status */}
                   {evaluationType === 'PI' && activeCandidateGDEval && (
                     <div className="p-3 bg-purple-50/80 border border-purple-200 rounded-xl flex items-center justify-between text-xs text-purple-900">
                       <div>
@@ -891,13 +1130,13 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Remarks & Automated Review Generator */}
-                <div className="pt-2 border-t border-slate-200/80 space-y-3">
+                {/* DUAL FEEDBACK SECTION: CUSTOMIZED FEEDBACK + AI FEEDBACK */}
+                <div className="pt-2 border-t border-slate-200/80 space-y-4">
                   {evaluationType === 'GD' && activeGDTopicTitle && (
                     <div className="p-2.5 bg-purple-50 border border-purple-200 rounded-xl flex items-center justify-between text-xs text-purple-900">
                       <div className="flex items-center space-x-2">
                         <Users size={14} className="text-purple-600" />
-                        <span><strong>Active GD Topic:</strong> "{activeGDTopicTitle}"</span>
+                        <span><strong>Current GD Discussion Topic:</strong> "{activeGDTopicTitle}"</span>
                       </div>
                       <button
                         type="button"
@@ -909,35 +1148,101 @@ export default function App() {
                     </div>
                   )}
 
-                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
-                    <label className="text-xs font-bold text-slate-800 uppercase tracking-wider">
-                      Interviewer Remarks & Student Feedback
-                    </label>
-
-                    <button
-                      type="button"
-                      onClick={handleGenerateReviewToRemarks}
-                      className="px-3 py-1.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white rounded-xl text-xs font-bold shadow-xs flex items-center space-x-1.5 transition-all"
-                      title="Generate detailed rubric-grounded review text based on current scores"
-                    >
-                      <Sparkles size={14} className="text-amber-100" />
-                      <span>⚡ Generate Automated Review</span>
-                    </button>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center space-x-1.5">
+                      <PenTool size={14} className="text-blue-600" />
+                      <span>Dual Feedback Controls (Customized & AI)</span>
+                    </span>
+                    <span className="text-[11px] text-slate-500">Recorded across both columns</span>
                   </div>
 
-                  <textarea
-                    value={interviewerRemarks}
-                    onChange={(e) => setInterviewerRemarks(e.target.value)}
-                    rows={4}
-                    placeholder="Enter observation notes, or click 'Generate Automated Review' above..."
-                    className="w-full p-3 bg-slate-50 border border-slate-300 rounded-xl text-xs focus:bg-white focus:ring-1 focus:ring-blue-500"
-                  />
+                  {/* 1. Custom Feedback Area */}
+                  <div className="space-y-2 bg-blue-50/40 p-4 rounded-xl border border-blue-100">
+                    <div className="flex justify-between items-center">
+                      <label className="text-xs font-bold text-blue-950">
+                        1. Interviewer Customized Notes / Feedback:
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setCustomFeedback('')}
+                        className="text-[10px] text-slate-400 hover:text-slate-600 flex items-center space-x-1"
+                      >
+                        <RotateCcw size={10} />
+                        <span>Clear</span>
+                      </button>
+                    </div>
+
+                    <textarea
+                      value={customFeedback}
+                      onChange={(e) => setCustomFeedback(e.target.value)}
+                      rows={3}
+                      placeholder="Write your customized feedback, specific question responses, strengths, or select tags below..."
+                      className="w-full p-2.5 bg-white border border-slate-300 rounded-xl text-xs focus:ring-1 focus:ring-blue-500"
+                    />
+
+                    {/* Quick feedback tags */}
+                    <div>
+                      <span className="text-[10px] font-semibold text-slate-500 block mb-1">
+                        Quick Tag Inserts:
+                      </span>
+                      <div className="flex flex-wrap gap-1.5">
+                        {QUICK_FEEDBACK_TAGS.map((tag, idx) => (
+                          <button
+                            key={idx}
+                            type="button"
+                            onClick={() => handleAddQuickTag(tag)}
+                            className="px-2 py-0.5 bg-white hover:bg-blue-100 text-slate-700 hover:text-blue-800 text-[10px] rounded-md border border-slate-200 transition-colors flex items-center space-x-1"
+                          >
+                            <Tag size={9} className="text-blue-500" />
+                            <span>{tag}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* 2. AI Feedback Area */}
+                  <div className="space-y-2 bg-amber-50/40 p-4 rounded-xl border border-amber-100">
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+                      <label className="text-xs font-bold text-amber-950 flex items-center space-x-1.5">
+                        <Sparkles size={14} className="text-amber-600" />
+                        <span>2. AI Automated Feedback:</span>
+                      </label>
+
+                      <div className="flex items-center space-x-2">
+                        <button
+                          type="button"
+                          onClick={handleGenerateAIFeedback}
+                          className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold shadow-2xs flex items-center space-x-1 transition-colors"
+                        >
+                          <Sparkles size={12} />
+                          <span>Generate AI Review</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleAppendAIToCustom}
+                          className="px-2.5 py-1 bg-white hover:bg-slate-100 text-slate-700 rounded-lg text-xs font-medium border border-slate-300"
+                          title="Append to custom feedback"
+                        >
+                          Append to Custom
+                        </button>
+                      </div>
+                    </div>
+
+                    <textarea
+                      value={aiFeedbackText || liveAutomatedReview.feedbackText}
+                      onChange={(e) => setAiFeedbackText(e.target.value)}
+                      rows={3}
+                      placeholder="AI generated comprehensive feedback will appear here..."
+                      className="w-full p-2.5 bg-white border border-slate-300 rounded-xl text-xs focus:ring-1 focus:ring-amber-500 text-slate-700 italic"
+                    />
+                  </div>
                 </div>
 
                 {/* Submit to Sheet */}
                 <div className="pt-3 border-t border-slate-200 flex flex-col sm:flex-row justify-between items-center gap-3">
                   <div className="text-xs text-slate-500">
-                    Recording as: <strong>{interviewer?.name || 'Unset Evaluator'}</strong>
+                    Interviewer: <strong>{selectedInterviewer}</strong>
                   </div>
 
                   <button
@@ -946,12 +1251,12 @@ export default function App() {
                     className="w-full sm:w-auto px-7 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-md hover:shadow-lg transition-all flex items-center justify-center space-x-2"
                   >
                     <Save size={16} />
-                    <span>Save {evaluationType} Evaluation to Google Sheet</span>
+                    <span>Save {evaluationType} Evaluation to Google Sheet Database</span>
                   </button>
                 </div>
               </div>
 
-              {/* Right 4 Columns: Real-Time Preview & Role Specs */}
+              {/* Right 4 Cols: Real-Time Preview & Role Specs */}
               <div className="lg:col-span-4 space-y-6">
                 {/* Live Automated Review Summary Card */}
                 <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 space-y-4">
@@ -1013,14 +1318,6 @@ export default function App() {
                         ))}
                       </ul>
                     </div>
-
-                    <button
-                      type="button"
-                      onClick={handleGenerateReviewToRemarks}
-                      className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl text-xs font-semibold transition-colors flex items-center justify-center space-x-1.5"
-                    >
-                      <span>Insert Review into Remarks</span>
-                    </button>
                   </div>
                 </div>
 
@@ -1072,15 +1369,19 @@ export default function App() {
           <SpreadsheetView
             evaluations={evaluations}
             candidates={candidates}
-            onDeleteRecord={(id) => {
+            onDeleteRecord={async (id) => {
               setEvaluations((prev) => prev.filter((e) => e.id !== id));
-              showToast('Record deleted from sheet.');
+              await syncService.deleteEvaluation(id);
+              showToast('Record deleted & synced.');
             }}
             onViewReview={(record) => setReviewModalRecord(record)}
             onEditAmcat={(cand) => {
               setAmcatTargetCandidate(cand);
               setIsAmcatModalOpen(true);
             }}
+            spreadsheetId={spreadsheetId}
+            onManualSync={handleManualSyncToGoogleSheets}
+            isSyncingSheets={isSyncingSheets}
           />
         )}
 
@@ -1091,7 +1392,7 @@ export default function App() {
               <div>
                 <h2 className="text-lg font-bold text-slate-900">Placement Drive Candidates Pool</h2>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Track candidates across GD & PI stages, edit category-wise AMCAT marks, or import Excel
+                  Real-time synchronized candidate registry across all evaluators and panels
                 </p>
               </div>
 
@@ -1120,124 +1421,154 @@ export default function App() {
               </div>
             </div>
 
-            {/* Candidates Grid Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {candidates.map((cand) => {
-                const candGDEval = evaluations.find(
-                  (e) => (e.candidateId === cand.id || e.rollNo === cand.rollNo) && e.evaluationType === 'GD'
-                );
-                const candPIEval = evaluations.find(
-                  (e) => (e.candidateId === cand.id || e.rollNo === cand.rollNo) && e.evaluationType === 'PI'
-                );
-
-                return (
-                  <div
-                    key={cand.id}
-                    className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 space-y-3 hover:border-blue-300 transition-all flex flex-col justify-between"
+            {/* Candidates Grid Cards or Empty Database Slate */}
+            {candidates.length === 0 ? (
+              <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-12 text-center space-y-4">
+                <div className="w-14 h-14 mx-auto rounded-full bg-blue-50 text-blue-600 flex items-center justify-center">
+                  <Users size={28} />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">Placement Database is Clean (0 Demo Candidates)</h3>
+                  <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
+                    Upload your campus student Excel sheet (.xlsx / .csv) or add candidates manually. Any candidate added will immediately sync across all evaluators.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+                  <button
+                    onClick={() => setIsCandidateModalOpen(true)}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-xs flex items-center space-x-1.5"
                   >
-                    <div>
-                      <div className="flex justify-between items-start">
-                        <div>
-                          <span className="font-mono text-xs text-slate-500 font-semibold">
-                            {cand.rollNo}
+                    <FileUp size={14} />
+                    <span>Upload Student Excel</span>
+                  </button>
+                  <button
+                    onClick={() => downloadSampleCandidateExcel()}
+                    className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold flex items-center space-x-1.5"
+                  >
+                    <Download size={14} />
+                    <span>Download Blank Template</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {candidates.map((cand) => {
+                  const candGDEval = evaluations.find(
+                    (e) => (e.candidateId === cand.id || e.rollNo === cand.rollNo) && e.evaluationType === 'GD'
+                  );
+                  const candPIEval = evaluations.find(
+                    (e) => (e.candidateId === cand.id || e.rollNo === cand.rollNo) && e.evaluationType === 'PI'
+                  );
+
+                  return (
+                    <div
+                      key={cand.id}
+                      className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 space-y-3 hover:border-blue-300 transition-all flex flex-col justify-between"
+                    >
+                      <div>
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <span className="font-mono text-xs text-slate-500 font-semibold">
+                              {cand.rollNo}
+                            </span>
+                            <h3 className="text-sm font-bold text-slate-900 mt-0.5">{cand.name}</h3>
+                          </div>
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                              cand.status === 'PI Shortlisted'
+                                ? 'bg-purple-100 text-purple-700'
+                                : cand.status === 'Selected'
+                                ? 'bg-emerald-100 text-emerald-700'
+                                : cand.status === 'Eliminated'
+                                ? 'bg-red-100 text-red-700'
+                                : 'bg-slate-100 text-slate-700'
+                            }`}
+                          >
+                            {cand.status}
                           </span>
-                          <h3 className="text-sm font-bold text-slate-900 mt-0.5">{cand.name}</h3>
                         </div>
-                        <span
-                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                            cand.status === 'PI Shortlisted'
-                              ? 'bg-purple-100 text-purple-700'
-                              : cand.status === 'Selected'
-                              ? 'bg-emerald-100 text-emerald-700'
-                              : cand.status === 'Eliminated'
-                              ? 'bg-red-100 text-red-700'
-                              : 'bg-slate-100 text-slate-700'
-                          }`}
-                        >
-                          {cand.status}
-                        </span>
+
+                        <div className="mt-3 text-xs text-slate-600 space-y-1.5">
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">Target Role:</span>
+                            <span className="font-medium text-slate-800">{cand.targetRole} ({cand.degree})</span>
+                          </div>
+
+                          {/* Interactive AMCAT score row */}
+                          <div className="flex justify-between items-center bg-amber-50/70 p-2 rounded-lg border border-amber-200/60">
+                            <span className="text-amber-900 font-semibold flex items-center space-x-1">
+                              <Trophy size={13} className="text-amber-600" />
+                              <span>AMCAT Score:</span>
+                            </span>
+                            <button
+                              onClick={() => {
+                                setAmcatTargetCandidate(cand);
+                                setIsAmcatModalOpen(true);
+                              }}
+                              className="font-bold text-amber-900 hover:text-amber-700 flex items-center space-x-1 font-mono text-xs underline"
+                              title="Click to edit category-wise AMCAT marks"
+                            >
+                              <span>{cand.amcatScore} pts</span>
+                              <span className="text-[10px]">✎</span>
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Drive round scores */}
+                        <div className="mt-3 pt-2 border-t border-slate-100 flex items-center space-x-2 text-[11px]">
+                          <span className="text-slate-400">Drive Scores:</span>
+                          {candGDEval ? (
+                            <span className="px-1.5 py-0.5 bg-purple-100 text-purple-800 rounded font-bold text-[10px]">
+                              GD: {candGDEval.totalScore}/50
+                            </span>
+                          ) : (
+                            <span className="text-slate-400 italic text-[10px]">GD: Pending</span>
+                          )}
+
+                          {candPIEval ? (
+                            <span className="px-1.5 py-0.5 bg-blue-100 text-blue-800 rounded font-bold text-[10px]">
+                              PI: {candPIEval.totalScore}/50
+                            </span>
+                          ) : (
+                            <span className="text-slate-400 italic text-[10px]">PI: Pending</span>
+                          )}
+                        </div>
                       </div>
 
-                      <div className="mt-3 text-xs text-slate-600 space-y-1.5">
-                        <div className="flex justify-between">
-                          <span className="text-slate-400">Target Role:</span>
-                          <span className="font-medium text-slate-800">{cand.targetRole} ({cand.degree})</span>
-                        </div>
-
-                        {/* Interactive AMCAT score row */}
-                        <div className="flex justify-between items-center bg-amber-50/70 p-2 rounded-lg border border-amber-200/60">
-                          <span className="text-amber-900 font-semibold flex items-center space-x-1">
-                            <Trophy size={13} className="text-amber-600" />
-                            <span>AMCAT Score:</span>
-                          </span>
+                      <div className="pt-2 flex items-center space-x-2">
+                        {!candGDEval ? (
                           <button
                             onClick={() => {
-                              setAmcatTargetCandidate(cand);
-                              setIsAmcatModalOpen(true);
+                              setEvaluationType('GD');
+                              handleCandidateSelect(cand.id);
+                              setActiveTab('evaluate');
                             }}
-                            className="font-bold text-amber-900 hover:text-amber-700 flex items-center space-x-1 font-mono text-xs underline"
-                            title="Click to edit category-wise AMCAT marks"
+                            className="flex-1 py-1.5 bg-purple-50 hover:bg-purple-600 hover:text-white text-purple-700 rounded-xl text-xs font-semibold transition-colors text-center"
                           >
-                            <span>{cand.amcatScore} pts</span>
-                            <span className="text-[10px]">✎</span>
+                            Evaluate GD
                           </button>
-                        </div>
-                      </div>
-
-                      {/* Drive round scores */}
-                      <div className="mt-3 pt-2 border-t border-slate-100 flex items-center space-x-2 text-[11px]">
-                        <span className="text-slate-400">Drive Scores:</span>
-                        {candGDEval ? (
-                          <span className="px-1.5 py-0.5 bg-purple-100 text-purple-800 rounded font-bold text-[10px]">
-                            GD: {candGDEval.totalScore}/50
-                          </span>
+                        ) : !candPIEval ? (
+                          <button
+                            onClick={() => {
+                              setEvaluationType('PI');
+                              handleCandidateSelect(cand.id);
+                              setActiveTab('evaluate');
+                            }}
+                            className="flex-1 py-1.5 bg-blue-50 hover:bg-blue-600 hover:text-white text-blue-700 rounded-xl text-xs font-semibold transition-colors text-center"
+                          >
+                            Evaluate PI
+                          </button>
                         ) : (
-                          <span className="text-slate-400 italic text-[10px]">GD: Pending</span>
-                        )}
-
-                        {candPIEval ? (
-                          <span className="px-1.5 py-0.5 bg-blue-100 text-blue-800 rounded font-bold text-[10px]">
-                            PI: {candPIEval.totalScore}/50
+                          <span className="flex-1 text-center py-1.5 text-xs text-emerald-700 font-bold bg-emerald-50 rounded-xl">
+                            Drive Completed (100M)
                           </span>
-                        ) : (
-                          <span className="text-slate-400 italic text-[10px]">PI: Pending</span>
                         )}
                       </div>
                     </div>
-
-                    <div className="pt-2 flex items-center space-x-2">
-                      {!candGDEval ? (
-                        <button
-                          onClick={() => {
-                            setEvaluationType('GD');
-                            handleCandidateSelect(cand.id);
-                            setActiveTab('evaluate');
-                          }}
-                          className="flex-1 py-1.5 bg-purple-50 hover:bg-purple-600 hover:text-white text-purple-700 rounded-xl text-xs font-semibold transition-colors text-center"
-                        >
-                          Evaluate GD
-                        </button>
-                      ) : !candPIEval ? (
-                        <button
-                          onClick={() => {
-                            setEvaluationType('PI');
-                            handleCandidateSelect(cand.id);
-                            setActiveTab('evaluate');
-                          }}
-                          className="flex-1 py-1.5 bg-blue-50 hover:bg-blue-600 hover:text-white text-blue-700 rounded-xl text-xs font-semibold transition-colors text-center"
-                        >
-                          Evaluate PI
-                        </button>
-                      ) : (
-                        <span className="flex-1 text-center py-1.5 text-xs text-emerald-700 font-bold bg-emerald-50 rounded-xl">
-                          Drive Completed (100M)
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
 
@@ -1313,41 +1644,30 @@ export default function App() {
         )}
       </main>
 
-      {/* MODAL 1: INTERVIEWER IDENTIFICATION */}
-      <InterviewerModal
-        isOpen={isInterviewerModalOpen}
-        currentProfile={interviewer}
-        mandatory={!interviewer}
-        onClose={() => {
-          if (interviewer) setIsInterviewerModalOpen(false);
-        }}
-        onSave={(profile) => {
-          setInterviewer(profile);
-          setIsInterviewerModalOpen(false);
-          showToast(`Welcome, ${profile.name}! Evaluator credentials verified.`);
-        }}
-      />
-
-      {/* MODAL 2: CANDIDATE MANAGER & EXCEL UPLOAD */}
+      {/* MODALS */}
       <CandidateManagerModal
         isOpen={isCandidateModalOpen}
         onClose={() => setIsCandidateModalOpen(false)}
         candidates={candidates}
-        onAddCandidate={(cand) => {
+        onAddCandidate={async (cand) => {
           setCandidates((prev) => [cand, ...prev]);
-          showToast(`Candidate ${cand.name} added to pool.`);
+          await syncService.saveCandidate(cand);
+          showToast(`Candidate ${cand.name} added and synced!`);
         }}
-        onBulkAddCandidates={(newCands) => {
+        onBulkAddCandidates={async (newCands) => {
           setCandidates((prev) => [...newCands, ...prev]);
+          await syncService.bulkAddCandidates(newCands);
           showToast(`Imported ${newCands.length} candidates from Excel!`);
         }}
-        onDeleteCandidate={(id) => {
+        onDeleteCandidate={async (id) => {
           setCandidates((prev) => prev.filter((c) => c.id !== id));
-          showToast('Candidate removed from pool.');
+          await syncService.deleteCandidate(id);
+          showToast('Candidate removed & synced.');
         }}
-        onResetCandidates={() => {
-          setCandidates(INITIAL_CANDIDATES);
-          showToast('Candidate pool restored to default college dataset.');
+        onResetCandidates={async () => {
+          setCandidates([]);
+          await syncService.resetCandidates();
+          showToast('Candidate pool cleared.');
         }}
         onSelectCandidateForEval={(cand) => {
           handleCandidateSelect(cand.id);
@@ -1355,7 +1675,6 @@ export default function App() {
         }}
       />
 
-      {/* MODAL 3: AMCAT CATEGORY & SCORE MANAGER */}
       <AmcatCategoryModal
         isOpen={isAmcatModalOpen}
         onClose={() => {
@@ -1363,48 +1682,46 @@ export default function App() {
           setAmcatTargetCandidate(null);
         }}
         categories={amcatCategories}
-        onUpdateCategories={(updatedCats) => {
+        onUpdateCategories={async (updatedCats) => {
           setAmcatCategories(updatedCats);
-          showToast('AMCAT categories updated successfully.');
+          await syncService.updateAmcatCategories(updatedCats);
+          showToast('AMCAT categories updated & synced.');
         }}
         selectedCandidate={amcatTargetCandidate}
         candidatesList={candidates}
         onUpdateCandidateScores={handleUpdateCandidateAmcat}
       />
 
-      {/* MODAL 4: GD TOPICS RECOMMENDER */}
       <GDRecommenderModal
         isOpen={isGDModalOpen}
         onClose={() => setIsGDModalOpen(false)}
         onSelectTopic={(topic) => {
           setActiveGDTopicTitle(topic.title);
-          setInterviewerRemarks(
+          setCustomFeedback(
             (prev) => (prev ? `${prev}\n\n` : '') + `[GD Topic: ${topic.title}]`
           );
-          showToast(`GD Topic "${topic.title.slice(0, 30)}..." selected for round!`);
+          showToast(`GD Topic "${topic.title.slice(0, 30)}..." selected!`);
         }}
       />
 
-      {/* MODAL 5: PI QUESTIONS RECOMMENDER */}
       <PIQuestionsModal
         isOpen={isPIModalOpen}
         onClose={() => setIsPIModalOpen(false)}
         targetRole={targetRole}
         onSelectQuestion={(qText) => {
-          setInterviewerRemarks(
+          setCustomFeedback(
             (prev) => (prev ? `${prev}\n\n` : '') + `[Asked Question: ${qText}]`
           );
-          showToast('Question inserted into interview notes!');
+          showToast('Question inserted into custom feedback notes!');
         }}
       />
 
-      {/* MODAL 6: FULL AUTOMATED REVIEW SCORECARD */}
       <AutomatedReviewModal
         isOpen={!!reviewModalRecord}
         record={reviewModalRecord}
         onClose={() => setReviewModalRecord(null)}
         onApplyToRemarks={(text) => {
-          setInterviewerRemarks(text);
+          setCustomFeedback(text);
           showToast('Review inserted into remarks!');
         }}
       />
