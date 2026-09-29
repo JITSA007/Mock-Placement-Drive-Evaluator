@@ -1,11 +1,21 @@
-import { Candidate, EvaluationRecord, AmcatCategory } from '../types';
+import { Candidate, EvaluationRecord, AmcatCategory, AppUser } from '../types';
+
+export interface MasterSheetConfig {
+  webhookUrl?: string;
+  spreadsheetId?: string;
+  ownerEmail?: string;
+  lastSyncedAt?: string;
+  syncCount?: number;
+}
 
 export interface SharedAppState {
   candidates?: Candidate[];
   evaluations?: EvaluationRecord[];
   amcatCategories?: AmcatCategory[];
   interviewers?: string[];
+  users?: AppUser[];
   connectedUsers?: number;
+  masterSheetConfig?: MasterSheetConfig;
 }
 
 type SyncCallback = (delta: SharedAppState) => void;
@@ -193,6 +203,34 @@ class SyncService {
       });
     } catch (err) {
       console.error('Error saving interviewer:', err);
+    }
+  }
+
+  public async saveUser(user: AppUser) {
+    try {
+      await fetch('/api/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(user),
+      });
+    } catch (err) {
+      console.error('Error saving user:', err);
+    }
+  }
+
+  public async deleteUser(id: string) {
+    try {
+      await fetch(`/api/users/${id}`, { method: 'DELETE' });
+    } catch (err) {
+      console.error('Error deleting user:', err);
+    }
+  }
+
+  public async resetUsers() {
+    try {
+      await fetch('/api/users/reset', { method: 'POST' });
+    } catch (err) {
+      console.error('Error resetting users:', err);
     }
   }
 }

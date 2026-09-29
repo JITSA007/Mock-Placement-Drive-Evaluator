@@ -22,6 +22,9 @@ import {
   Tag,
   PenTool,
   RotateCcw,
+  FileText,
+  Key,
+  ExternalLink,
 } from 'lucide-react';
 import {
   AmcatCategory,
@@ -30,6 +33,7 @@ import {
   EvaluationRecord,
   EvaluationType,
   TargetRole,
+  AppUser,
 } from './types';
 import {
   GD_CRITERIA,
@@ -37,6 +41,7 @@ import {
   ROLES_CONFIG,
   DEFAULT_AMCAT_CATEGORIES,
 } from './data/sampleData';
+import { DEFAULT_USERS } from './data/defaultUsers';
 import { generateAutomatedReview } from './utils/reviewGenerator';
 import { CandidateManagerModal } from './components/CandidateManagerModal';
 import { GDRecommenderModal } from './components/GDRecommenderModal';
@@ -46,6 +51,12 @@ import { AutomatedReviewModal } from './components/AutomatedReviewModal';
 import { AmcatCategoryModal } from './components/AmcatCategoryModal';
 import { InterviewerLoginBar } from './components/InterviewerLoginBar';
 import { LoginGate } from './components/LoginGate';
+import { StudentNoticeBoard } from './components/StudentNoticeBoard';
+import { UserManagementModal } from './components/UserManagementModal';
+import { CandidateDossierModal } from './components/CandidateDossierModal';
+import { GoogleSheetSyncModal } from './components/GoogleSheetSyncModal';
+import { UniversalSheetModal } from './components/UniversalSheetModal';
+import { EvaluationTimer } from './components/EvaluationTimer';
 import { downloadSampleCandidateExcel } from './utils/excelUtils';
 import { syncService } from './utils/syncService';
 import { initAuth, googleSignIn, logout, getAccessToken } from './utils/googleAuth';
@@ -54,15 +65,6 @@ import {
   appendEvaluationToGoogleSheet,
   syncAllToGoogleSheet,
 } from './utils/googleSheetsDatabase';
-
-const DEFAULT_INTERVIEWERS = [
-  'Dr. Rajesh Sharma (Nexora Tech Lead)',
-  'Priya Patel (InsightEdge Analytics)',
-  'Amit Verma (CloudVantage Tech Sales)',
-  'Dr. Sunita Rao (HR & Corporate Panel)',
-  'Sneha Kulkarni (Full Stack Engineering Lead)',
-  'Vikram Mehta (Placement Coordinator)',
-];
 
 const QUICK_FEEDBACK_TAGS = [
   'Strong domain knowledge',
@@ -79,32 +81,82 @@ export default function App() {
   // Navigation Tabs
   const [activeTab, setActiveTab] = useState<'evaluate' | 'sheet' | 'candidates' | 'resources'>('evaluate');
 
-  // Google User Login & Sheets Database State
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [isGuestMode, setIsGuestMode] = useState<boolean>(() => {
-    return localStorage.getItem('placement_guest_mode') === 'true';
+  // App Users & Authentication State
+  const [users, setUsers] = useState<AppUser[]>(() => {
+    const saved = localStorage.getItem('placement_users_list');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      } catch (e) {
+        return DEFAULT_USERS;
+      }
+    }
+    return DEFAULT_USERS;
   });
+
+  const [currentAppUser, setCurrentAppUser] = useState<AppUser | null>(() => {
+    const saved = localStorage.getItem('placement_current_user');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        return null;
+      }
+    }
+    return null;
+  });
+
+  // Dedicated Page Routing: 'login' (Interviewer Login) | 'evaluator' (Workspace) | 'student-board' (Public Read-Only)
+  const [pageMode, setPageMode] = useState<'login' | 'evaluator' | 'student-board'>(() => {
+    if (typeof window !== 'undefined') {
+      const hash = window.location.hash;
+      if (hash === '#student-board') return 'student-board';
+      const savedUser = localStorage.getItem('placement_current_user');
+      if (savedUser) {
+        try {
+          const u = JSON.parse(savedUser);
+          if (u && u.username) return 'evaluator';
+        } catch (e) {}
+      }
+    }
+    return 'login';
+  });
+
+  // Listen to browser hash changes (#login, #evaluator, #student-board)
+  useEffect(() => {
+    const handleHash = () => {
+      const hash = window.location.hash;
+      if (hash === '#student-board') {
+        setPageMode('student-board');
+      } else if (hash === '#login') {
+        if (!currentAppUser) setPageMode('login');
+      } else if (hash === '#evaluator') {
+        if (currentAppUser) setPageMode('evaluator');
+        else setPageMode('login');
+      }
+    };
+    window.addEventListener('hashchange', handleHash);
+    return () => window.removeEventListener('hashchange', handleHash);
+  }, [currentAppUser]);
+
+  // Google OAuth User (Optional)
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [spreadsheetId, setSpreadsheetId] = useState<string | null>(() => {
     return localStorage.getItem('placement_google_sheet_database_id');
   });
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isSyncingSheets, setIsSyncingSheets] = useState(false);
 
-  // Interviewer Dropdown State (Direct dropdown - No modal form!)
+  // Evaluator selection
   const [interviewersList, setInterviewersList] = useState<string[]>(() => {
-    const saved = localStorage.getItem('placement_interviewers_list');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        return DEFAULT_INTERVIEWERS;
-      }
-    }
-    return DEFAULT_INTERVIEWERS;
+    return users.map((u) => u.name);
   });
 
   const [selectedInterviewer, setSelectedInterviewer] = useState<string>(() => {
-    return localStorage.getItem('placement_selected_interviewer') || DEFAULT_INTERVIEWERS[0];
+    if (currentAppUser) return currentAppUser.name;
+    const saved = localStorage.getItem('placement_selected_interviewer');
+    return saved || users[0]?.name || 'Sahin';
   });
   const [isAddingNewInterviewer, setIsAddingNewInterviewer] = useState(false);
   const [newInterviewerInput, setNewInterviewerInput] = useState('');
@@ -124,7 +176,7 @@ export default function App() {
   const [isAmcatModalOpen, setIsAmcatModalOpen] = useState(false);
   const [amcatTargetCandidate, setAmcatTargetCandidate] = useState<Candidate | null>(null);
 
-  // Candidates & Evaluations Store (Real-time synchronized across users)
+  // Candidates & Evaluations Store (Clean initial database - 0 demo data)
   const [candidates, setCandidates] = useState<Candidate[]>(() => {
     const saved = localStorage.getItem('placement_candidates');
     if (saved) {
@@ -177,7 +229,26 @@ export default function App() {
   const [isCandidateModalOpen, setIsCandidateModalOpen] = useState(false);
   const [isGDModalOpen, setIsGDModalOpen] = useState(false);
   const [isPIModalOpen, setIsPIModalOpen] = useState(false);
+  const [isUserManagementOpen, setIsUserManagementOpen] = useState(false);
+  const [dossierCandidate, setDossierCandidate] = useState<Candidate | null>(null);
   const [reviewModalRecord, setReviewModalRecord] = useState<EvaluationRecord | null>(null);
+  const [isSheetSyncModalOpen, setIsSheetSyncModalOpen] = useState(false);
+  const [masterSheetConfig, setMasterSheetConfig] = useState<{
+    webhookUrl?: string;
+    spreadsheetId?: string;
+    ownerEmail?: string;
+    lastSyncedAt?: string;
+    syncCount?: number;
+  }>(() => {
+    const saved = localStorage.getItem('placement_master_sheet_config');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {}
+    }
+    return { ownerEmail: 'jitsahere@gmail.com', syncCount: 0 };
+  });
+  const [isUniversalSheetModalOpen, setIsUniversalSheetModalOpen] = useState(false);
 
   // Notifications & Live Sync Indicator
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
@@ -189,11 +260,8 @@ export default function App() {
     const unsubscribeAuth = initAuth(
       async (user, token) => {
         setCurrentUser(user);
-        // Add user to interviewer list if not already
         if (user.displayName) {
-          const formatted = `${user.displayName} (${user.email || 'Google User'})`;
-          setInterviewersList((prev) => (prev.includes(formatted) ? prev : [formatted, ...prev]));
-          setSelectedInterviewer(formatted);
+          setSelectedInterviewer(user.displayName);
         }
 
         // Initialize or find Google Sheet database
@@ -220,7 +288,13 @@ export default function App() {
         if (Array.isArray(data.candidates)) setCandidates(data.candidates);
         if (Array.isArray(data.evaluations)) setEvaluations(data.evaluations);
         if (Array.isArray(data.amcatCategories)) setAmcatCategories(data.amcatCategories);
-        if (Array.isArray(data.interviewers)) setInterviewersList(data.interviewers);
+        if (data.masterSheetConfig) setMasterSheetConfig(data.masterSheetConfig);
+        if (Array.isArray(data.users)) {
+          setUsers(data.users);
+          setInterviewersList(data.users.map((u: AppUser) => u.name));
+        } else if (Array.isArray(data.interviewers)) {
+          setInterviewersList(data.interviewers);
+        }
         if (typeof data.connectedUsers === 'number') setConnectedUsers(data.connectedUsers);
         setLiveSyncActive(true);
       })
@@ -231,7 +305,13 @@ export default function App() {
       if (delta.candidates !== undefined) setCandidates(delta.candidates);
       if (delta.evaluations !== undefined) setEvaluations(delta.evaluations);
       if (delta.amcatCategories !== undefined) setAmcatCategories(delta.amcatCategories);
-      if (delta.interviewers !== undefined) setInterviewersList(delta.interviewers);
+      if (delta.masterSheetConfig !== undefined) setMasterSheetConfig(delta.masterSheetConfig);
+      if (delta.users !== undefined) {
+        setUsers(delta.users);
+        setInterviewersList(delta.users.map((u) => u.name));
+      } else if (delta.interviewers !== undefined) {
+        setInterviewersList(delta.interviewers);
+      }
       if (typeof delta.connectedUsers === 'number') setConnectedUsers(delta.connectedUsers);
     });
 
@@ -242,6 +322,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('placement_selected_interviewer', selectedInterviewer);
   }, [selectedInterviewer]);
+
+  useEffect(() => {
+    localStorage.setItem('placement_users_list', JSON.stringify(users));
+  }, [users]);
 
   useEffect(() => {
     localStorage.setItem('placement_interviewers_list', JSON.stringify(interviewersList));
@@ -264,7 +348,28 @@ export default function App() {
     setTimeout(() => setNotification(null), 3500);
   };
 
-  // Google Login Handler
+  // --- Credentials Authentication Handler (Sahin, Ashad, Harleen, Gunjan, Aditi, Jitendra) ---
+  const handleLoginWithCredentials = (username: string, password: string): boolean => {
+    const matched = users.find(
+      (u) =>
+        u.username.toLowerCase() === username.toLowerCase() &&
+        u.password === password &&
+        u.active
+    );
+
+    if (matched) {
+      setCurrentAppUser(matched);
+      setSelectedInterviewer(matched.name);
+      localStorage.setItem('placement_current_user', JSON.stringify(matched));
+      setPageMode('evaluator');
+      window.location.hash = '#evaluator';
+      showToast(`Welcome, ${matched.name}! Logged in as ${matched.role}.`);
+      return true;
+    }
+    return false;
+  };
+
+  // Google Login Handler (for supported domains)
   const handleGoogleLogin = async () => {
     setIsLoggingIn(true);
     try {
@@ -272,49 +377,122 @@ export default function App() {
       if (result) {
         setCurrentUser(result.user);
         if (result.user.displayName) {
-          const formatted = `${result.user.displayName} (${result.user.email || 'Google User'})`;
-          setInterviewersList((prev) => (prev.includes(formatted) ? prev : [formatted, ...prev]));
-          setSelectedInterviewer(formatted);
-          syncService.addInterviewer(formatted);
+          setSelectedInterviewer(result.user.displayName);
         }
 
-        // Initialize or find user's Google Sheet database
         const sheetId = await getOrCreateDatabaseSpreadsheet(result.accessToken);
         setSpreadsheetId(sheetId);
-        showToast('Signed in! Google Sheets database connected.');
+        showToast('Signed in with Google! Google Sheets database connected.');
       }
     } catch (err: any) {
-      showToast(err.message || 'Login failed', 'error');
+      showToast(err.message || 'Google sign-in error. Use direct username/password login.', 'error');
     } finally {
       setIsLoggingIn(false);
     }
   };
 
-  const handleGoogleLogout = async () => {
-    await logout();
+  const handleLogout = async () => {
+    try {
+      await logout();
+    } catch (e) {}
     setCurrentUser(null);
-    setIsGuestMode(false);
+    setCurrentAppUser(null);
+    localStorage.removeItem('placement_current_user');
     localStorage.removeItem('placement_guest_mode');
-    showToast('Signed out of Google account.');
+    setPageMode('login');
+    window.location.hash = '#login';
+    showToast('Signed out. Evaluation portal locked.');
   };
 
-  // Manual Push to Google Sheet Database
-  const handleManualSyncToGoogleSheets = async () => {
-    const token = await getAccessToken();
-    if (!token || !spreadsheetId) {
-      showToast('Please sign in to Google to sync database.', 'error');
-      return;
+  // User Management Handlers (Save, Delete, Reset)
+  const handleSaveUser = async (user: AppUser) => {
+    setUsers((prev) => {
+      const idx = prev.findIndex((u) => u.id === user.id);
+      if (idx !== -1) {
+        const updated = [...prev];
+        updated[idx] = user;
+        return updated;
+      }
+      return [...prev, user];
+    });
+
+    if (currentAppUser && currentAppUser.id === user.id) {
+      setCurrentAppUser(user);
+      localStorage.setItem('placement_current_user', JSON.stringify(user));
     }
 
-    setIsSyncingSheets(true);
-    try {
-      await syncAllToGoogleSheet(token, spreadsheetId, evaluations, candidates);
-      showToast('All records successfully synchronized to Google Sheet database!');
-    } catch (err: any) {
-      showToast(err.message || 'Failed to sync to Google Sheet', 'error');
-    } finally {
-      setIsSyncingSheets(false);
+    await syncService.saveUser(user);
+    showToast(`User ${user.name} saved and synced!`);
+  };
+
+  const handleDeleteUser = async (id: string) => {
+    setUsers((prev) => prev.filter((u) => u.id !== id));
+    await syncService.deleteUser(id);
+    showToast('User removed.');
+  };
+
+  const handleResetUsers = async () => {
+    setUsers(DEFAULT_USERS);
+    await syncService.resetUsers();
+    showToast('Restored default 6 evaluator credentials.');
+  };
+
+  // Manual Push / Export to Google Sheet Database & Excel
+  const handleManualSyncToGoogleSheets = async () => {
+    const token = await getAccessToken();
+    if (token && spreadsheetId) {
+      setIsSyncingSheets(true);
+      try {
+        await syncAllToGoogleSheet(token, spreadsheetId, evaluations, candidates);
+        showToast('All records successfully synchronized to Google Sheet database!');
+      } catch (err: any) {
+        setIsSheetSyncModalOpen(true);
+      } finally {
+        setIsSyncingSheets(false);
+      }
+    } else {
+      // Seamlessly open Google Sheets / Excel Export & Sync Modal!
+      setIsSheetSyncModalOpen(true);
     }
+  };
+
+  // Universal Master Google Sheet Handlers (Owned by jitsahere@gmail.com)
+  const handleSaveMasterSheetConfig = async (config: { webhookUrl?: string; spreadsheetId?: string }) => {
+    const updated = {
+      ...masterSheetConfig,
+      ...config,
+      ownerEmail: 'jitsahere@gmail.com',
+      lastSyncedAt: new Date().toLocaleTimeString(),
+    };
+    setMasterSheetConfig(updated);
+    localStorage.setItem('placement_master_sheet_config', JSON.stringify(updated));
+    if (config.spreadsheetId) {
+      setSpreadsheetId(config.spreadsheetId);
+      localStorage.setItem('placement_google_sheet_database_id', config.spreadsheetId);
+    }
+    try {
+      await fetch('/api/master-sheet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updated),
+      });
+    } catch (e) {}
+    showToast('Universal Master Sheet connected! All 6 evaluators will auto-write here.');
+  };
+
+  const handleForceSyncAllToMasterSheet = async () => {
+    if (!masterSheetConfig.webhookUrl) {
+      showToast('Please set your Google Sheet Webhook URL first.', 'error');
+      return;
+    }
+    const res = await fetch('/api/master-sheet/sync-all', {
+      method: 'POST',
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || 'Failed to sync to master sheet');
+    }
+    showToast(`Master Google Sheet updated with all ${evaluations.length} evaluation records!`);
   };
 
   // Find active candidate object
@@ -406,7 +584,7 @@ export default function App() {
       setInterviewersList(updated);
       setSelectedInterviewer(trimmed);
       syncService.addInterviewer(trimmed);
-      showToast(`Added interviewer "${trimmed}"!`);
+      showToast(`Added evaluator "${trimmed}"!`);
     } else {
       setSelectedInterviewer(trimmed);
     }
@@ -501,23 +679,23 @@ export default function App() {
     setEvaluations((prev) => [newRecord, ...prev]);
     await syncService.saveEvaluation(newRecord);
 
-    // 2. Append to real Google Sheets Database if user is logged in
+    // 2. Append to real Google Sheets Database if user is logged into Google
     const token = await getAccessToken();
     if (token && spreadsheetId) {
       try {
         await appendEvaluationToGoogleSheet(token, spreadsheetId, newRecord);
       } catch (sheetErr) {
-        console.warn('Failed to append to Google Sheet in background:', sheetErr);
+        console.warn('Google Sheet append error:', sheetErr);
       }
     }
 
     if (evaluationType === 'GD') {
-      showToast(`GD Evaluation (${totalScore}/50) recorded to Google Sheet & server!`);
+      showToast(`GD Evaluation (${totalScore}/50) recorded & synced!`);
       if (shortlistForPI) {
         setJustCompletedGDCandidate(matchedCand);
       }
     } else {
-      showToast(`Personal Interview (${totalScore}/50) recorded to Google Sheet & server!`);
+      showToast(`Personal Interview (${totalScore}/50) recorded & synced!`);
       setJustCompletedGDCandidate(null);
     }
 
@@ -552,14 +730,32 @@ export default function App() {
     (c) => c.status === 'PI Shortlisted' || evaluations.some((e) => e.candidateId === c.id && e.evaluationType === 'GD')
   );
 
-  // Protected Login Gate: Show sign-in screen if interviewer is not authenticated
-  if (!currentUser && !isGuestMode) {
+  // PAGE ROUTING:
+  // 1. Standalone Public Student Notice Board (Strictly Read-Only - Safe for Students!)
+  if (pageMode === 'student-board') {
+    return (
+      <StudentNoticeBoard
+        candidates={candidates}
+        evaluations={evaluations}
+        connectedUsers={connectedUsers}
+        onGoToLogin={() => {
+          setPageMode('login');
+          window.location.hash = '#login';
+        }}
+      />
+    );
+  }
+
+  // 2. Standalone Evaluator Login Screen (Protected by Credentials)
+  if (!currentAppUser) {
     return (
       <LoginGate
-        onLogin={handleGoogleLogin}
-        onContinueAsGuest={() => {
-          setIsGuestMode(true);
-          localStorage.setItem('placement_guest_mode', 'true');
+        users={users}
+        onLoginWithCredentials={handleLoginWithCredentials}
+        onLoginWithGoogle={handleGoogleLogin}
+        onGoToStudentBoard={() => {
+          setPageMode('student-board');
+          window.location.hash = '#student-board';
         }}
         isLoggingIn={isLoggingIn}
       />
@@ -632,7 +828,7 @@ export default function App() {
                       </option>
                     ))}
                     <option value="__add_new__" className="text-blue-600 font-semibold">
-                      + Add New Interviewer Name...
+                      + Add New Evaluator Name...
                     </option>
                   </select>
                 </div>
@@ -642,7 +838,7 @@ export default function App() {
                     type="text"
                     value={newInterviewerInput}
                     onChange={(e) => setNewInterviewerInput(e.target.value)}
-                    placeholder="Enter Interviewer Name..."
+                    placeholder="Enter Evaluator Name..."
                     autoFocus
                     className="px-2 py-1 bg-white border border-blue-400 rounded-lg text-xs font-semibold focus:outline-none w-44"
                   />
@@ -667,13 +863,30 @@ export default function App() {
 
         {/* INTERVIEWER LOGIN & GOOGLE SHEETS DATABASE BAR */}
         <InterviewerLoginBar
-          currentUser={currentUser}
+          currentInterviewer={
+            currentAppUser
+              ? {
+                  name: currentAppUser.name,
+                  username: currentAppUser.username,
+                  role: currentAppUser.role,
+                  panel: currentAppUser.panel,
+                  email: currentAppUser.email,
+                }
+              : currentUser
+              ? {
+                  name: currentUser.displayName || 'Google Evaluator',
+                  email: currentUser.email || undefined,
+                  photoURL: currentUser.photoURL || undefined,
+                }
+              : null
+          }
           spreadsheetId={spreadsheetId}
-          isLoggingIn={isLoggingIn}
           isSyncingSheets={isSyncingSheets}
-          onLogin={handleGoogleLogin}
-          onLogout={handleGoogleLogout}
+          onLogout={handleLogout}
           onManualSync={handleManualSyncToGoogleSheets}
+          onOpenUserManagement={() => setIsUserManagementOpen(true)}
+          onOpenUniversalSheetModal={() => setIsUniversalSheetModalOpen(true)}
+          isMasterSheetConnected={!!masterSheetConfig.webhookUrl}
         />
 
         {/* Global Navigation Tabs */}
@@ -725,6 +938,28 @@ export default function App() {
             >
               <HelpCircle size={15} className="text-purple-600" />
               <span>GD Topics & Interview Bank</span>
+            </button>
+
+            {/* View student board preview */}
+            <button
+              onClick={() => {
+                setPageMode('student-board');
+                window.location.hash = '#student-board';
+              }}
+              className="py-2.5 border-b-2 border-transparent text-blue-600 hover:text-blue-800 flex items-center space-x-1.5 transition-colors whitespace-nowrap ml-auto"
+              title="Preview the read-only notice board students see"
+            >
+              <ExternalLink size={13} />
+              <span>Student Notice Board ↗</span>
+            </button>
+
+            {/* Quick credentials access tab button */}
+            <button
+              onClick={() => setIsUserManagementOpen(true)}
+              className="py-2.5 border-b-2 border-transparent text-slate-600 hover:text-blue-700 flex items-center space-x-1.5 transition-colors whitespace-nowrap"
+            >
+              <Key size={14} className="text-amber-500" />
+              <span>Manage 6 Logins Table</span>
             </button>
           </div>
         </div>
@@ -857,7 +1092,10 @@ export default function App() {
                     </p>
                   </div>
 
-                  <div className="flex items-center space-x-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {/* Live Round Countdown Timer */}
+                    <EvaluationTimer evaluationType={evaluationType} defaultMinutes={20} />
+
                     {evaluationType === 'GD' ? (
                       <button
                         type="button"
@@ -1242,7 +1480,7 @@ export default function App() {
                 {/* Submit to Sheet */}
                 <div className="pt-3 border-t border-slate-200 flex flex-col sm:flex-row justify-between items-center gap-3">
                   <div className="text-xs text-slate-500">
-                    Interviewer: <strong>{selectedInterviewer}</strong>
+                    Evaluator: <strong>{selectedInterviewer}</strong>
                   </div>
 
                   <button
@@ -1251,7 +1489,7 @@ export default function App() {
                     className="w-full sm:w-auto px-7 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-md hover:shadow-lg transition-all flex items-center justify-center space-x-2"
                   >
                     <Save size={16} />
-                    <span>Save {evaluationType} Evaluation to Google Sheet Database</span>
+                    <span>Save {evaluationType} Evaluation to Database</span>
                   </button>
                 </div>
               </div>
@@ -1382,6 +1620,8 @@ export default function App() {
             spreadsheetId={spreadsheetId}
             onManualSync={handleManualSyncToGoogleSheets}
             isSyncingSheets={isSyncingSheets}
+            onOpenUniversalSheetModal={() => setIsUniversalSheetModalOpen(true)}
+            isMasterSheetConnected={!!masterSheetConfig.webhookUrl}
           />
         )}
 
@@ -1409,7 +1649,7 @@ export default function App() {
                   className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold shadow-xs flex items-center space-x-1.5 transition-colors"
                 >
                   <Download size={14} />
-                  <span>Download Sample Excel</span>
+                  <span>Download Blank Template</span>
                 </button>
                 <button
                   onClick={() => setIsCandidateModalOpen(true)}
@@ -1563,6 +1803,17 @@ export default function App() {
                             Drive Completed (100M)
                           </span>
                         )}
+
+                        {/* View / Print Official Dossier Scorecard */}
+                        {(candGDEval || candPIEval) && (
+                          <button
+                            onClick={() => setDossierCandidate(cand)}
+                            className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold transition-colors shrink-0"
+                            title="Print Official Scorecard / Dossier"
+                          >
+                            <FileText size={14} />
+                          </button>
+                        )}
                       </div>
                     </div>
                   );
@@ -1645,6 +1896,22 @@ export default function App() {
       </main>
 
       {/* MODALS */}
+      <UserManagementModal
+        isOpen={isUserManagementOpen}
+        onClose={() => setIsUserManagementOpen(false)}
+        users={users}
+        onSaveUser={handleSaveUser}
+        onDeleteUser={handleDeleteUser}
+        onResetUsers={handleResetUsers}
+      />
+
+      <CandidateDossierModal
+        isOpen={!!dossierCandidate}
+        onClose={() => setDossierCandidate(null)}
+        candidate={dossierCandidate}
+        evaluations={evaluations}
+      />
+
       <CandidateManagerModal
         isOpen={isCandidateModalOpen}
         onClose={() => setIsCandidateModalOpen(false)}
@@ -1724,6 +1991,25 @@ export default function App() {
           setCustomFeedback(text);
           showToast('Review inserted into remarks!');
         }}
+      />
+
+      <GoogleSheetSyncModal
+        isOpen={isSheetSyncModalOpen}
+        onClose={() => setIsSheetSyncModalOpen(false)}
+        evaluations={evaluations}
+        candidates={candidates}
+        onSignInGoogle={handleGoogleLogin}
+        isGoogleConnected={!!currentUser}
+      />
+
+      <UniversalSheetModal
+        isOpen={isUniversalSheetModalOpen}
+        onClose={() => setIsUniversalSheetModalOpen(false)}
+        masterSheetConfig={masterSheetConfig}
+        onSaveMasterSheetConfig={handleSaveMasterSheetConfig}
+        onForceSyncAll={handleForceSyncAllToMasterSheet}
+        evaluationsCount={evaluations.length}
+        candidatesCount={candidates.length}
       />
     </div>
   );

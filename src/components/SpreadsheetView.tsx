@@ -23,6 +23,8 @@ interface SpreadsheetViewProps {
   spreadsheetId?: string | null;
   onManualSync?: () => void;
   isSyncingSheets?: boolean;
+  onOpenUniversalSheetModal?: () => void;
+  isMasterSheetConnected?: boolean;
 }
 
 export const SpreadsheetView: React.FC<SpreadsheetViewProps> = ({
@@ -34,6 +36,8 @@ export const SpreadsheetView: React.FC<SpreadsheetViewProps> = ({
   spreadsheetId,
   onManualSync,
   isSyncingSheets,
+  onOpenUniversalSheetModal,
+  isMasterSheetConnected = false,
 }) => {
   const [activeSheetTab, setActiveSheetTab] = useState<'evaluations' | 'leaderboard'>('evaluations');
   const [searchQuery, setSearchQuery] = useState('');
@@ -124,46 +128,60 @@ export const SpreadsheetView: React.FC<SpreadsheetViewProps> = ({
           <Database size={16} className="text-emerald-700 shrink-0" />
           <div>
             <div className="font-bold flex items-center space-x-1.5">
-              <span>Google Sheets Database Integration:</span>
-              {spreadsheetId ? (
-                <span className="px-2 py-0.5 bg-emerald-200 text-emerald-900 rounded font-mono text-[11px]">
-                  Mock Placement Drive Database
+              <span>Universal Master Google Sheet (jitsahere@gmail.com):</span>
+              {isMasterSheetConnected ? (
+                <span className="px-2 py-0.5 bg-emerald-200 text-emerald-900 rounded font-bold text-[11px] flex items-center space-x-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse"></span>
+                  <span>Active & Auto-Syncing</span>
                 </span>
               ) : (
-                <span className="text-amber-800 font-normal">
-                  (Sign in with Google in header to auto-sync to your Google Drive)
+                <span className="text-amber-800 font-semibold">
+                  (Click to link your single master sheet)
                 </span>
               )}
             </div>
             <p className="text-[11px] text-emerald-800">
-              Evaluations & candidate marks are written as live rows in your Google Spreadsheet.
+              {isMasterSheetConnected
+                ? 'All evaluations submitted by any of the 6 interviewers automatically write to your single sheet.'
+                : 'Connect your Google Sheet Webhook once so all evaluators write to your single sheet without Google logins.'}
             </p>
           </div>
         </div>
 
-        {spreadsheetId && (
-          <div className="flex items-center space-x-2 self-end sm:self-auto">
-            {onManualSync && (
-              <button
-                onClick={onManualSync}
-                disabled={isSyncingSheets}
-                className="px-3 py-1 bg-white hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-lg text-xs font-semibold shadow-2xs flex items-center space-x-1 transition-colors disabled:opacity-50"
-              >
-                <RefreshCw size={12} className={isSyncingSheets ? 'animate-spin' : ''} />
-                <span>{isSyncingSheets ? 'Syncing...' : 'Sync Database'}</span>
-              </button>
-            )}
-            <a
-              href={`https://docs.google.com/spreadsheets/d/${spreadsheetId}`}
-              target="_blank"
-              rel="noopener noreferrer"
+        <div className="flex items-center space-x-2 self-end sm:self-auto flex-wrap">
+          {onManualSync && (
+            <button
+              onClick={onManualSync}
+              disabled={isSyncingSheets}
+              className="px-3 py-1 bg-white hover:bg-emerald-100 text-emerald-900 border border-emerald-300 rounded-lg text-xs font-bold shadow-2xs flex items-center space-x-1 transition-colors disabled:opacity-50"
+              title="Sync or export all evaluations to Google Sheets / Excel"
+            >
+              <RefreshCw size={12} className={isSyncingSheets ? 'animate-spin' : ''} />
+              <span>{isSyncingSheets ? 'Syncing...' : 'Export / Sync'}</span>
+            </button>
+          )}
+
+          {onOpenUniversalSheetModal && (
+            <button
+              onClick={onOpenUniversalSheetModal}
               className="px-3 py-1 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-bold shadow-2xs flex items-center space-x-1 transition-colors"
             >
-              <span>Open in Google Sheets</span>
+              <span>{isMasterSheetConnected ? 'Manage Master Sheet ⚙' : '⚡ Connect Universal Sheet'}</span>
+            </button>
+          )}
+
+          {spreadsheetId && (
+            <a
+              href={spreadsheetId.startsWith('http') ? spreadsheetId : `https://docs.google.com/spreadsheets/d/${spreadsheetId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-3 py-1 bg-white hover:bg-emerald-100 text-emerald-900 border border-emerald-300 rounded-lg text-xs font-bold shadow-2xs flex items-center space-x-1 transition-colors"
+            >
+              <span>Open Sheet</span>
               <ExternalLink size={12} />
             </a>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       {/* Sheet Tabs */}

@@ -8,7 +8,8 @@ import {
   INITIAL_EVALUATIONS,
   DEFAULT_AMCAT_CATEGORIES,
 } from './src/data/sampleData.ts';
-import { Candidate, EvaluationRecord, AmcatCategory } from './src/types.ts';
+import { DEFAULT_USERS } from './src/data/defaultUsers.ts';
+import { Candidate, EvaluationRecord, AmcatCategory, AppUser } from './src/types.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -17,14 +18,18 @@ const __dirname = path.dirname(__filename);
 let sharedCandidates: Candidate[] = [...INITIAL_CANDIDATES];
 let sharedEvaluations: EvaluationRecord[] = [...INITIAL_EVALUATIONS];
 let sharedAmcatCategories: AmcatCategory[] = [...DEFAULT_AMCAT_CATEGORIES];
-let sharedInterviewers: string[] = [
-  'Dr. Rajesh Sharma (Nexora Tech Lead)',
-  'Priya Patel (InsightEdge Analytics)',
-  'Amit Verma (CloudVantage Tech Sales)',
-  'Dr. Sunita Rao (HR & Corporate Panel)',
-  'Sneha Kulkarni (Engineering Lead)',
-  'Vikram Mehta (Placement Coordinator)',
-];
+let sharedUsers: AppUser[] = [...DEFAULT_USERS];
+let sharedInterviewers: string[] = DEFAULT_USERS.map((u) => u.name);
+let masterSheetConfig: {
+  webhookUrl?: string;
+  spreadsheetId?: string;
+  ownerEmail?: string;
+  lastSyncedAt?: string;
+  syncCount?: number;
+} = {
+  ownerEmail: 'jitsahere@gmail.com',
+  syncCount: 0,
+};
 
 // Active SSE client connections
 const clients: Response[] = [];
@@ -59,6 +64,8 @@ async function startServer() {
         evaluations: sharedEvaluations,
         amcatCategories: sharedAmcatCategories,
         interviewers: sharedInterviewers,
+        users: sharedUsers,
+        masterSheetConfig,
       })}\n\n`
     );
 
@@ -79,6 +86,8 @@ async function startServer() {
       evaluations: sharedEvaluations,
       amcatCategories: sharedAmcatCategories,
       interviewers: sharedInterviewers,
+      users: sharedUsers,
+      masterSheetConfig,
       connectedUsers: Math.max(1, clients.length),
     });
   });
@@ -104,9 +113,40 @@ async function startServer() {
       }
     }
 
+    // Auto-forward to Universal Master Google Sheet if configured
+    if (masterSheetConfig.webhookUrl) {
+      fetch(masterSheetConfig.webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'append_evaluation',
+          srNo: record.srNo,
+          timestamp: record.timestamp,
+          rollNo: record.rollNo,
+          studentName: record.studentName,
+          degree: record.degree,
+          targetRole: record.targetRole,
+          evaluationType: record.evaluationType,
+          totalScore: record.totalScore,
+          verdict: record.automatedReview?.verdict || 'Evaluated',
+          interviewerName: record.interviewerName,
+          customFeedback: record.customFeedback || record.interviewerRemarks || '',
+          aiFeedback: record.aiFeedback || '',
+        }),
+      })
+        .then(() => {
+          masterSheetConfig.syncCount = (masterSheetConfig.syncCount || 0) + 1;
+          masterSheetConfig.lastSyncedAt = new Date().toLocaleTimeString();
+        })
+        .catch((err) => {
+          console.log('Error forwarding to master Google Sheet webhook:', err.message);
+        });
+    }
+
     broadcast('state_updated', {
       evaluations: sharedEvaluations,
       candidates: sharedCandidates,
+      masterSheetConfig,
     });
 
     res.json({ success: true, record });
@@ -174,7 +214,67 @@ async function startServer() {
     res.status(400).json({ error: 'Invalid categories' });
   });
 
-  // 6. Interviewers Management Endpoint
+  // 6. User Credentials Management Endpoint
+  app.get('/api/users', (req: Request, res: Response) => {
+    res.json({ users: sharedUsers });
+  });
+
+  app.post('/api/users', (req: Request, res: Response) => {
+    const user: AppUser = req.body;
+    if (!user || !user.username) {
+      return res.status(400).json({ error: 'Username is required' });
+    }
+
+    const existingIndex = sharedUsers.findIndex(
+      (u) => u.id === user.id || u.username.toLowerCase() === user.username.toLowerCase()
+    );
+
+    if (existingIndex !== -1) {
+      sharedUsers[existingIndex] = { ...sharedUsers[existingIndex], ...user };
+    } else {
+      const newUser: AppUser = {
+        ...user,
+        id: user.id || `user-${Date.now()}`,
+      };
+      sharedUsers.push(newUser);
+    }
+
+    sharedInterviewers = sharedUsers.map((u) => u.name);
+
+    broadcast('state_updated', {
+      users: sharedUsers,
+      interviewers: sharedInterviewers,
+    });
+
+    res.json({ success: true, users: sharedUsers });
+  });
+
+  app.delete('/api/users/:id', (req: Request, res: Response) => {
+    const { id } = req.params;
+    sharedUsers = sharedUsers.filter((u) => u.id !== id);
+    sharedInterviewers = sharedUsers.map((u) => u.name);
+
+    broadcast('state_updated', {
+      users: sharedUsers,
+      interviewers: sharedInterviewers,
+    });
+
+    res.json({ success: true, users: sharedUsers });
+  });
+
+  app.post('/api/users/reset', (req: Request, res: Response) => {
+    sharedUsers = [...DEFAULT_USERS];
+    sharedInterviewers = DEFAULT_USERS.map((u) => u.name);
+
+    broadcast('state_updated', {
+      users: sharedUsers,
+      interviewers: sharedInterviewers,
+    });
+
+    res.json({ success: true, users: sharedUsers });
+  });
+
+  // 7. Interviewers Management Endpoint
   app.post('/api/interviewers', (req: Request, res: Response) => {
     const { name } = req.body;
     if (name && typeof name === 'string' && !sharedInterviewers.includes(name.trim())) {
@@ -183,6 +283,79 @@ async function startServer() {
       return res.json({ success: true, interviewers: sharedInterviewers });
     }
     res.json({ success: true, interviewers: sharedInterviewers });
+  });
+
+  // 8. Universal Master Google Sheet Endpoints
+  app.get('/api/master-sheet', (req: Request, res: Response) => {
+    res.json(masterSheetConfig);
+  });
+
+  app.post('/api/master-sheet', (req: Request, res: Response) => {
+    const { webhookUrl, spreadsheetId, ownerEmail } = req.body;
+    masterSheetConfig = {
+      ...masterSheetConfig,
+      webhookUrl: webhookUrl !== undefined ? String(webhookUrl).trim() : masterSheetConfig.webhookUrl,
+      spreadsheetId: spreadsheetId !== undefined ? String(spreadsheetId).trim() : masterSheetConfig.spreadsheetId,
+      ownerEmail: ownerEmail || masterSheetConfig.ownerEmail,
+      lastSyncedAt: new Date().toLocaleTimeString(),
+    };
+    broadcast('state_updated', { masterSheetConfig });
+    res.json({ success: true, masterSheetConfig });
+  });
+
+  app.post('/api/master-sheet/sync-all', async (req: Request, res: Response) => {
+    if (!masterSheetConfig.webhookUrl) {
+      return res.status(400).json({ error: 'No master sheet webhook configured' });
+    }
+
+    try {
+      const rows = sharedEvaluations.map((e) => [
+        e.srNo,
+        e.timestamp,
+        e.rollNo,
+        e.studentName,
+        e.degree,
+        e.targetRole,
+        e.evaluationType === 'GD' ? 'Group Discussion (50M)' : 'Personal Interview (50M)',
+        `${e.totalScore}/50`,
+        e.automatedReview?.verdict || 'Evaluated',
+        e.interviewerName,
+        e.customFeedback || e.interviewerRemarks || '',
+        e.aiFeedback || '',
+      ]);
+
+      const headers = [
+        'Sr No',
+        'Timestamp',
+        'Roll No',
+        'Student Name',
+        'Degree',
+        'Target Role',
+        'Round',
+        'Total Score',
+        'Verdict',
+        'Evaluator',
+        'Remarks',
+        'AI Feedback',
+      ];
+
+      await fetch(masterSheetConfig.webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'clear_and_sync',
+          headers,
+          rows,
+        }),
+      });
+
+      masterSheetConfig.lastSyncedAt = new Date().toLocaleTimeString();
+      masterSheetConfig.syncCount = sharedEvaluations.length;
+      broadcast('state_updated', { masterSheetConfig });
+      res.json({ success: true, count: rows.length });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to sync with master sheet webhook' });
+    }
   });
 
   // 7. Mount Vite in Development or Serve Static in Production

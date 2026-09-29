@@ -81,3 +81,14 @@ export interface InterviewQuestion {
   evaluationHints: string[];
   followUpProbes: string[];
 }
+
+export interface AppUser {
+  id: string;
+  name: string;
+  username: string;
+  password: string;
+  role: 'Interviewer' | 'Lead Evaluator' | 'Admin';
+  panel?: string;
+  email?: string;
+  active: boolean;
+}
