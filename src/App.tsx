@@ -56,7 +56,9 @@ import { UserManagementModal } from './components/UserManagementModal';
 import { CandidateDossierModal } from './components/CandidateDossierModal';
 import { GoogleSheetSyncModal } from './components/GoogleSheetSyncModal';
 import { UniversalSheetModal } from './components/UniversalSheetModal';
+import { GDBatchAssessment } from './components/GDBatchAssessment';
 import { EvaluationTimer } from './components/EvaluationTimer';
+import { StudentReportModal } from './components/StudentReportModal';
 import { downloadSampleCandidateExcel } from './utils/excelUtils';
 import { syncService } from './utils/syncService';
 import { initAuth, googleSignIn, logout, getAccessToken } from './utils/googleAuth';
@@ -210,6 +212,7 @@ export default function App() {
 
   // FLOW STATE: GD First, then PI
   const [evaluationType, setEvaluationType] = useState<EvaluationType>('GD');
+  const [gdMode, setGdMode] = useState<'batch' | 'single'>('batch');
   const [shortlistForPI, setShortlistForPI] = useState<boolean>(true);
 
   // Evaluation Form State
@@ -249,6 +252,7 @@ export default function App() {
     return { ownerEmail: 'jitsahere@gmail.com', syncCount: 0 };
   });
   const [isUniversalSheetModalOpen, setIsUniversalSheetModalOpen] = useState(false);
+  const [studentReportCandidate, setStudentReportCandidate] = useState<Candidate | null>(null);
 
   // Notifications & Live Sync Indicator
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
@@ -590,6 +594,42 @@ export default function App() {
     }
     setNewInterviewerInput('');
     setIsAddingNewInterviewer(false);
+  };
+
+  // Batch GD Evaluation Save Handler (Saves individual scorecards for each student in the group)
+  const handleSaveBatchGDEvaluations = async (records: EvaluationRecord[], updatedCands: Candidate[]) => {
+    // 1. Update evaluations state
+    setEvaluations((prev) => [
+      ...records,
+      ...prev.filter(
+        (e) => !records.some((r) => r.id === e.id || (r.rollNo.toLowerCase() === e.rollNo.toLowerCase() && e.evaluationType === 'GD'))
+      ),
+    ]);
+
+    // 2. Update candidates state with their status (PI Shortlisted or Eliminated)
+    setCandidates((prev) => {
+      const copy = [...prev];
+      updatedCands.forEach((uc) => {
+        const idx = copy.findIndex((c) => c.id === uc.id || c.rollNo.toLowerCase() === uc.rollNo.toLowerCase());
+        if (idx !== -1) {
+          copy[idx] = { ...copy[idx], status: uc.status };
+        }
+      });
+      return copy;
+    });
+
+    // 3. Save each evaluation & candidate to syncService (broadcasts SSE and writes to Universal Master Google Sheet!)
+    for (const rec of records) {
+      await syncService.saveEvaluation(rec);
+    }
+    for (const uc of updatedCands) {
+      await syncService.saveCandidate(uc);
+    }
+
+    const shortlistedCount = updatedCands.filter((c) => c.status === 'PI Shortlisted').length;
+    showToast(
+      `✓ GD Circle Complete! ${records.length} students scored individually (${shortlistedCount} shortlisted for PI) and synced.`
+    );
   };
 
   // Switch to PI Round for candidate
@@ -1067,8 +1107,63 @@ export default function App() {
               </div>
             )}
 
-            {/* Evaluation Form & Real-Time Preview */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            {/* Mode Switch for GD Round */}
+            {evaluationType === 'GD' && (
+              <div className="bg-purple-50/80 border border-purple-200/80 p-3 rounded-2xl flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 shadow-2xs">
+                <div className="flex items-center space-x-2">
+                  <span className="text-xs font-bold text-purple-950 px-1">GD Format:</span>
+                  <div className="flex items-center space-x-1 bg-white p-1 rounded-xl border border-purple-200 shadow-2xs">
+                    <button
+                      type="button"
+                      onClick={() => setGdMode('batch')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center space-x-1.5 transition-all ${
+                        gdMode === 'batch'
+                          ? 'bg-purple-700 text-white shadow-xs'
+                          : 'text-purple-900 hover:bg-purple-50'
+                      }`}
+                    >
+                      <Users size={14} />
+                      <span>Group Discussion Circle (Assess Group of Students Together)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setGdMode('single')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center space-x-1.5 transition-all ${
+                        gdMode === 'single'
+                          ? 'bg-purple-700 text-white shadow-xs'
+                          : 'text-purple-900 hover:bg-purple-50'
+                      }`}
+                    >
+                      <UserCheck size={14} />
+                      <span>Single Candidate Form</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="text-[11px] text-purple-700 font-medium px-2">
+                  {gdMode === 'batch'
+                    ? '👥 Click student names to form a circle & score all students simultaneously.'
+                    : '👤 Standard 1-by-1 candidate scoring.'}
+                </div>
+              </div>
+            )}
+
+            {/* If GD & Batch Mode -> Show GDBatchAssessment */}
+            {evaluationType === 'GD' && gdMode === 'batch' ? (
+              <GDBatchAssessment
+                candidates={candidates}
+                evaluations={evaluations}
+                currentInterviewer={selectedInterviewer}
+                interviewerPanel={currentAppUser?.panel}
+                onSaveEvaluations={handleSaveBatchGDEvaluations}
+                onOpenGDTopicModal={() => setIsGDModalOpen(true)}
+                activeTopic={activeGDTopicTitle}
+                onProceedToPI={handleStartPIRoundForCandidate}
+              />
+            ) : (
+              /* Evaluation Form & Real-Time Preview */
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
               {/* Left 8 Cols: Form with Scoring & Dual Feedback */}
               <div className="lg:col-span-8 bg-white rounded-2xl shadow-sm border border-slate-200 p-6 md:p-7 space-y-6">
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center pb-4 border-b border-slate-100 gap-3">
@@ -1599,6 +1694,7 @@ export default function App() {
                 </div>
               </div>
             </div>
+            )}
           </div>
         )}
 
@@ -1637,6 +1733,17 @@ export default function App() {
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={() => {
+                    setActiveTab('evaluate');
+                    setEvaluationType('GD');
+                    setGdMode('batch');
+                  }}
+                  className="px-3.5 py-2 bg-purple-700 hover:bg-purple-800 text-white rounded-xl text-xs font-semibold shadow-xs flex items-center space-x-1.5 transition-colors"
+                >
+                  <Users size={14} />
+                  <span>Start Group Discussion (GD)</span>
+                </button>
                 <button
                   onClick={() => setIsAmcatModalOpen(true)}
                   className="px-3.5 py-2 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-xl text-xs font-semibold shadow-xs flex items-center space-x-1.5 transition-colors"
@@ -2011,6 +2118,14 @@ export default function App() {
         evaluationsCount={evaluations.length}
         candidatesCount={candidates.length}
       />
+
+      {studentReportCandidate && (
+        <StudentReportModal
+          candidate={studentReportCandidate}
+          evaluations={evaluations}
+          onClose={() => setStudentReportCandidate(null)}
+        />
+      )}
     </div>
   );
 }
